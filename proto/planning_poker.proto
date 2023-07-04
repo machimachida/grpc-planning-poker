@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+package planning_poker;
+
+option go_package = "./pb";
+
+service PlanningPoker {
+  rpc Connect(ConnectRequest) returns (stream ConnectResponse);
+  rpc Vote(VoteRequest) returns (VoteResponse);
+  rpc ShowVotes(ShowVotesRequest) returns (ShowVotesResponse);
+  rpc Disconnect(DisconnectRequest) returns (DisconnectResponse);
+}
+
+message ConnectRequest {
+  string id = 1;
+}
+message ConnectResponse {
+  string id = 1;
+  string message = 2;
+}
+
+message VoteRequest {
+  string id = 1;
+  int32 vote = 2;
+}
+message VoteResponse {
+  string message = 1;
+}
+
+message ShowVotesRequest {
+  string id = 1;
+}
+message ShowVotesResponse {
+  string message = 1;
+}
+
+message DisconnectRequest {
+  string id = 1;
+}
+message DisconnectResponse {
+  string message = 1;
+}
