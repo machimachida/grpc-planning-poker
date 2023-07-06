@@ -7,16 +7,18 @@ import (
 	"os"
 	"time"
 
+	"github.com/fatih/color"
 	"github.com/machimachida/grpc-planning-poker/pb"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 func main() {
 	name := flag.String("name", "SatoTaro", "name of user")
-	waitSecond := flag.Int("wait", 180, "wait second")
+	waitSecond := flag.Int("wait", 600, "wait second")
 	flag.Parse()
 
-	conn, err := grpc.Dial("localhost:50051", grpc.WithInsecure())
+	conn, err := grpc.Dial("localhost:50051", grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		panic(err)
 	}
@@ -29,7 +31,7 @@ func main() {
 			if message, err := stream.Recv(); err != nil {
 				break
 			} else {
-				println("broadcast: " + message.Message)
+				println(color.HiGreenString("broadcast: " + message.Message))
 			}
 		}
 	}(&client)
@@ -40,7 +42,7 @@ func main() {
 		os.Exit(0)
 	}()
 
-	fmt.Println("Waiting your vote...")
+	fmt.Println("Start planning poker!")
 	for {
 		var n int32
 		fmt.Scan(&n)
@@ -49,11 +51,11 @@ func main() {
 			break
 		}
 		if n == 0 {
-			showVotes(client)
+			showVotes(client, *name)
 			continue
 		}
 		vote(client, *name, n)
-		fmt.Println("Waiting other votes...")
+		fmt.Println("Waiting others' votes...")
 	}
 
 	disconnect(client, *name)
@@ -83,8 +85,8 @@ func vote(client pb.PlanningPokerClient, id string, vote int32) {
 	println(recv.Message)
 }
 
-func showVotes(client pb.PlanningPokerClient) {
-	recv, err := client.ShowVotes(context.Background(), &pb.ShowVotesRequest{})
+func showVotes(client pb.PlanningPokerClient, id string) {
+	recv, err := client.ShowVotes(context.Background(), &pb.ShowVotesRequest{Id: id})
 	if err != nil {
 		panic(err)
 	}

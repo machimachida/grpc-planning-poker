@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -12,56 +13,70 @@ import (
 	"google.golang.org/grpc"
 )
 
-type server struct {
+var (
+	cm      = ConnectionMap{streams: make(map[string]pb.PlanningPoker_ConnectServer)}
+	voteMap = sync.Map{}
+)
+
+type Server struct {
 	pb.UnimplementedPlanningPokerServer
 }
 
-var cm = connectionMap{stream: make(map[string]pb.PlanningPoker_ConnectServer)}
-var voteMap = sync.Map{}
-
-func (*server) Connect(req *pb.ConnectRequest, stream pb.PlanningPoker_ConnectServer) error {
+func (*Server) Connect(req *pb.ConnectRequest, stream pb.PlanningPoker_ConnectServer) error {
 	fmt.Println("Connect function was invoked with a streaming request from " + req.Id)
-	cm.connect(stream, req.Id)
+
+	err := cm.Connect(stream, req.Id)
+	if err != nil {
+		return err
+	}
+	cm.Broadcast(req.Id + " is connected")
 
 	for {
-		time.Sleep(1 * time.Second)
+		select {
+		case <-stream.Context().Done():
+			return nil
+		default:
+			time.Sleep(1 * time.Second)
+		}
 	}
 }
 
-func (*server) Disconnect(ctx context.Context, req *pb.DisconnectRequest) (*pb.DisconnectResponse, error) {
-	fmt.Println("Disconnect function was invoked with a streaming request from " + req.Id)
-	cm.broadcast(&pb.ConnectResponse{Message: req.Id + " is disconnected"})
-	cm.disconnect(req.Id)
+func (*Server) Disconnect(ctx context.Context, req *pb.DisconnectRequest) (*pb.DisconnectResponse, error) {
+	fmt.Println("Disconnect function was invoked with a request from " + req.Id)
+
+	cm.Broadcast(req.Id + " is disconnected")
+
+	cm.Disconnect(req.Id)
 	voteMap.Delete(req.Id)
 	return &pb.DisconnectResponse{Message: "disconnected"}, nil
 }
 
-func (*server) Vote(ctx context.Context, req *pb.VoteRequest) (*pb.VoteResponse, error) {
-	fmt.Println(req.Vote)
-	fmt.Println("Vote function was invoked with a streaming request from " + req.Id + " with " + string(req.Vote) + " vote")
+func (*Server) Vote(ctx context.Context, req *pb.VoteRequest) (*pb.VoteResponse, error) {
+	fmt.Printf("Vote function was invoked with a request from %s with vote \"%d\"\n", req.Id, req.Vote)
+
+	cm.Broadcast(req.Id + " is voted")
 
 	voteMap.Store(req.Id, req.Vote)
-
-	cm.broadcast(&pb.ConnectResponse{Message: req.Id + " is voted"})
 	return &pb.VoteResponse{Message: "voted"}, nil
 }
 
-func (*server) ShowVotes(ctx context.Context, req *pb.ShowVotesRequest) (*pb.ShowVotesResponse, error) {
-	fmt.Println("ShowVotes function was invoked with a streaming request from " + req.Id)
-	cm.broadcast(&pb.ConnectResponse{Message: "show votes"})
+func (*Server) ShowVotes(ctx context.Context, req *pb.ShowVotesRequest) (*pb.ShowVotesResponse, error) {
+	fmt.Println("ShowVotes function was invoked with a request from " + req.Id)
+
+	cm.Broadcast("show votes by " + req.Id)
 
 	var sum int32
 	var size int
 	voteMap.Range(func(key, value interface{}) bool {
-		cm.broadcast(&pb.ConnectResponse{Message: fmt.Sprintf("%s: %d", key, value)})
+		cm.Broadcast(fmt.Sprintf("%s: %d", key, value))
 		sum += value.(int32)
 		size++
 		return true
 	})
-	cm.broadcast(&pb.ConnectResponse{Message: fmt.Sprintf("average: %f", float32(sum)/float32(size))})
+	cm.Broadcast(fmt.Sprintf("average: %f\n", float32(sum)/float32(size)))
 
 	voteMap = sync.Map{}
-	cm.broadcast(&pb.ConnectResponse{Message: "new game start"})
+	cm.Broadcast("new game start")
 
 	return &pb.ShowVotesResponse{Message: "accepted"}, nil
 }
@@ -73,40 +88,45 @@ func main() {
 	}
 
 	s := grpc.NewServer()
-	pb.RegisterPlanningPokerServer(s, &server{})
+	pb.RegisterPlanningPokerServer(s, &Server{})
 	fmt.Println("Server is running on port 50051")
 	if err := s.Serve(lis); err != nil {
 		log.Fatalf("Failed to serve: %v", err)
 	}
 }
 
-type connectionMap struct {
-	mu     sync.Mutex
-	stream map[string]pb.PlanningPoker_ConnectServer
+// Connectionの状態を保持する構造体。
+// この構造体は、Connect関数で生成され、Disconnect関数で削除される。
+// streamsは、クライアントのIDをキーとして、クライアントとの接続を保持する。
+type ConnectionMap struct {
+	mu      sync.Mutex
+	streams map[string]pb.PlanningPoker_ConnectServer
 }
 
-func (cm *connectionMap) connect(stream pb.PlanningPoker_ConnectServer, name string) {
-	cm.mu.Lock()
-	cm.stream[name] = stream
-	cm.mu.Unlock()
-}
+var ErrAlreadyConnected = errors.New("already connected")
 
-func (cm *connectionMap) disconnect(name string) {
+func (cm *ConnectionMap) Connect(stream pb.PlanningPoker_ConnectServer, name string) error {
 	cm.mu.Lock()
-	delete(cm.stream, name)
-	cm.mu.Unlock()
-}
-
-func (cm *connectionMap) broadcast(message *pb.ConnectResponse) {
-	cm.mu.Lock()
-	for _, stream := range cm.stream {
-		stream.Send(message)
+	if _, ok := cm.streams[name]; ok {
+		cm.mu.Unlock()
+		return ErrAlreadyConnected
 	}
+	cm.streams[name] = stream
+	cm.mu.Unlock()
+	return nil
+}
+
+func (cm *ConnectionMap) Disconnect(name string) {
+	cm.mu.Lock()
+	cm.streams[name].Context().Done()
+	delete(cm.streams, name)
 	cm.mu.Unlock()
 }
 
-func (cm *connectionMap) send(message *pb.ConnectResponse, stream pb.PlanningPoker_ConnectServer) {
+func (cm *ConnectionMap) Broadcast(message string) {
 	cm.mu.Lock()
-	stream.Send(message)
+	for _, stream := range cm.streams {
+		stream.Send(&pb.ConnectResponse{Message: message})
+	}
 	cm.mu.Unlock()
 }
