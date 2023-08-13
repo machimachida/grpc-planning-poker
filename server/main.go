@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"github.com/google/uuid"
 	"log"
 	"net"
 	"sync"
@@ -19,8 +21,7 @@ const (
 )
 
 var (
-	cm      = ConnectionMap{streams: make(map[string]pb.PlanningPoker_ConnectServer)}
-	voteMap = sync.Map{}
+	rm = RoomMap{rooms: make(map[string]*Room)}
 )
 
 func main() {
@@ -41,29 +42,111 @@ type Server struct {
 	pb.UnimplementedPlanningPokerServer
 }
 
+var (
+	ErrReservedUserName = errors.New("this name is reserved")
+	ErrExistRoom        = errors.New("this room is already exist")
+)
+
+func (*Server) CreateRoom(req *pb.CreateRoomRequest, stream pb.PlanningPoker_CreateRoomServer) error {
+	log.Println("CreateRoom function was invoked with a request from " + req.Id)
+
+	if req.Id == AVERAGE {
+		return ErrReservedUserName
+	}
+
+	rm.mu.Lock()
+	for room := range rm.rooms {
+		if room == req.Id {
+			rm.mu.Unlock()
+			return ErrExistRoom
+		}
+	}
+
+	id := uuid.New().String()
+	rm.rooms[id] = &Room{
+		id:          id,
+		name:        req.Id,
+		connections: ConnectionMap{streams: make(map[string]pb.PlanningPoker_ConnectServer, 1)},
+		voteMap:     &sync.Map{},
+	}
+	rm.mu.Unlock()
+
+	log.Println("room created: " + id)
+	err := stream.Send(&pb.ConnectResponse{Message: id, Type: pb.MessageType_CREATE_ROOM})
+	if err != nil {
+		log.Println("failed to send message.", err)
+	}
+
+	err = connectWithRoom(stream, id, req.Id)
+	return err
+}
+
 func (*Server) Connect(req *pb.ConnectRequest, stream pb.PlanningPoker_ConnectServer) error {
 	log.Println("Connect function was invoked with a streaming request from " + req.Id)
 
 	if req.Id == AVERAGE {
-		return errors.New("this name is reserved")
+		return ErrReservedUserName
 	}
 
-	err := cm.Connect(stream, req.Id)
-	if err != nil {
+	err := connectWithRoom(stream, req.RoomId, req.Id)
+	return err
+}
+
+func connectWithRoom(stream pb.PlanningPoker_ConnectServer, roomId, name string) error {
+	r, ok := rm.rooms[roomId]
+	if !ok {
+		msg := fmt.Sprintf("room %s not found", roomId)
+		err := errors.New(msg)
+		log.Println(err)
 		return err
 	}
-	cm.Broadcast(req.Id, pb.MessageType_JOIN)
+
+	err := r.connections.Connect(stream, name)
+	if err != nil {
+		log.Println("failed to connect", err)
+		return err
+	}
+
+	// クライアントがルームに参加した際の、他ユーザの接続状況を通知する
+	userVoteStatus := make(map[string]bool, len(r.connections.streams))
+	for id := range r.connections.streams {
+		if _, ok := r.voteMap.Load(id); ok {
+			userVoteStatus[id] = true
+		} else {
+			userVoteStatus[id] = false
+		}
+	}
+	b, err := json.Marshal(userVoteStatus)
+	if err != nil {
+		log.Println("failed to marshal user vote status.", err)
+	} else {
+		err := stream.Send(&pb.ConnectResponse{Message: string(b), Type: pb.MessageType_STATUS})
+		if err != nil {
+			log.Println("failed to send message.", err)
+		}
+	}
+
+	// 参加したことを全ユーザに通知する
+	r.connections.Broadcast(name, pb.MessageType_JOIN)
 
 	for {
 		select {
 		case <-stream.Context().Done():
-			log.Println(req.Id + " is disconnected")
+			log.Println(name + " is disconnected from " + roomId)
 			if err := stream.Context().Err(); err != nil {
-				log.Println(req.Id, err)
+				log.Println(name, err)
 			}
-			voteMap.Delete(req.Id)
-			cm.Disconnect(req.Id)
-			cm.Broadcast(req.Id, pb.MessageType_LEAVE)
+			r.connections.Disconnect(name)
+			r.connections.Broadcast(name, pb.MessageType_LEAVE)
+
+			// 参加者がいなくなったらルームを削除する
+			if len(r.connections.streams) == 0 {
+				rm.mu.Lock()
+				log.Println("room " + roomId + " is closed")
+				delete(rm.rooms, roomId)
+				rm.mu.Unlock()
+			}
+
 			return nil
 		default:
 			time.Sleep(1 * time.Second)
@@ -74,19 +157,42 @@ func (*Server) Connect(req *pb.ConnectRequest, stream pb.PlanningPoker_ConnectSe
 func (*Server) Vote(_ context.Context, req *pb.VoteRequest) (*pb.VoteResponse, error) {
 	log.Printf("Vote function was invoked with a request from %s with vote \"%d\"\n", req.Id, req.Vote)
 
-	cm.Broadcast(req.Id, pb.MessageType_VOTE)
+	r, ok := rm.rooms[req.RoomId]
+	if !ok {
+		err := fmt.Errorf("room %s not found", req.RoomId)
+		log.Println(err)
+		return nil, err
+	}
 
-	voteMap.Store(req.Id, req.Vote)
+	if req.Vote == -1 {
+		r.connections.Broadcast(req.Id, pb.MessageType_RESET_VOTE)
+		r.voteMap.Delete(req.Id)
+	} else if req.Vote <= 0 {
+		err := fmt.Errorf("invalid vote %d", req.Vote)
+		log.Println(err)
+		return &pb.VoteResponse{Message: "invalid vote"}, err
+	} else {
+		r.connections.Broadcast(req.Id, pb.MessageType_VOTE)
+		r.voteMap.Store(req.Id, req.Vote)
+	}
+
 	return &pb.VoteResponse{Message: "voted"}, nil
 }
 
 func (*Server) ShowVotes(_ context.Context, req *pb.ShowVotesRequest) (*pb.ShowVotesResponse, error) {
 	log.Println("ShowVotes function was invoked with a request from " + req.Id)
 
-	votes := make(map[string]float32, len(cm.streams)+1)
+	r, ok := rm.rooms[req.RoomId]
+	if !ok {
+		err := fmt.Errorf("room %s not found", req.RoomId)
+		log.Println(err)
+		return nil, err
+	}
+
+	votes := make(map[string]float32, len(r.connections.streams)+1)
 	var sum int32
 	var l int
-	voteMap.Range(func(key, value any) bool {
+	r.voteMap.Range(func(key, value any) bool {
 		id, ok := key.(string)
 		if !ok {
 			return true
@@ -110,7 +216,7 @@ func (*Server) ShowVotes(_ context.Context, req *pb.ShowVotesRequest) (*pb.ShowV
 	if err != nil {
 		log.Println("failed to marshal votes.", err)
 	}
-	cm.Broadcast(string(b), pb.MessageType_SHOW_VOTES)
+	r.connections.Broadcast(string(b), pb.MessageType_SHOW_VOTES)
 
 	return &pb.ShowVotesResponse{Message: "accepted"}, nil
 }
@@ -118,10 +224,31 @@ func (*Server) ShowVotes(_ context.Context, req *pb.ShowVotesRequest) (*pb.ShowV
 func (*Server) NewGame(_ context.Context, req *pb.NewGameRequest) (*pb.NewGameResponse, error) {
 	log.Println("NewGame function was invoked with a request from " + req.Id)
 
-	voteMap = sync.Map{}
-	cm.Broadcast("new game start", pb.MessageType_NEW_GAME)
+	r, ok := rm.rooms[req.RoomId]
+	if !ok {
+		err := fmt.Errorf("room %s not found", req.RoomId)
+		log.Println(err)
+		return nil, err
+	}
+
+	var m sync.Map
+	r.voteMap = &m
+	log.Println("new game start in Room " + req.RoomId)
+	r.connections.Broadcast("new game start", pb.MessageType_NEW_GAME)
 
 	return &pb.NewGameResponse{Message: "accepted"}, nil
+}
+
+type RoomMap struct {
+	mu    sync.Mutex
+	rooms map[string]*Room
+}
+
+type Room struct {
+	id          string
+	name        string
+	connections ConnectionMap
+	voteMap     *sync.Map
 }
 
 // ConnectionMap Connectionの状態を保持する構造体。

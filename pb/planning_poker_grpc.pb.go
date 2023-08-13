@@ -22,6 +22,7 @@ const _ = grpc.SupportPackageIsVersion7
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type PlanningPokerClient interface {
+	CreateRoom(ctx context.Context, in *CreateRoomRequest, opts ...grpc.CallOption) (PlanningPoker_CreateRoomClient, error)
 	Connect(ctx context.Context, in *ConnectRequest, opts ...grpc.CallOption) (PlanningPoker_ConnectClient, error)
 	Vote(ctx context.Context, in *VoteRequest, opts ...grpc.CallOption) (*VoteResponse, error)
 	ShowVotes(ctx context.Context, in *ShowVotesRequest, opts ...grpc.CallOption) (*ShowVotesResponse, error)
@@ -36,8 +37,40 @@ func NewPlanningPokerClient(cc grpc.ClientConnInterface) PlanningPokerClient {
 	return &planningPokerClient{cc}
 }
 
+func (c *planningPokerClient) CreateRoom(ctx context.Context, in *CreateRoomRequest, opts ...grpc.CallOption) (PlanningPoker_CreateRoomClient, error) {
+	stream, err := c.cc.NewStream(ctx, &PlanningPoker_ServiceDesc.Streams[0], "/planning_poker.PlanningPoker/CreateRoom", opts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &planningPokerCreateRoomClient{stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+type PlanningPoker_CreateRoomClient interface {
+	Recv() (*ConnectResponse, error)
+	grpc.ClientStream
+}
+
+type planningPokerCreateRoomClient struct {
+	grpc.ClientStream
+}
+
+func (x *planningPokerCreateRoomClient) Recv() (*ConnectResponse, error) {
+	m := new(ConnectResponse)
+	if err := x.ClientStream.RecvMsg(m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
 func (c *planningPokerClient) Connect(ctx context.Context, in *ConnectRequest, opts ...grpc.CallOption) (PlanningPoker_ConnectClient, error) {
-	stream, err := c.cc.NewStream(ctx, &PlanningPoker_ServiceDesc.Streams[0], "/planning_poker.PlanningPoker/Connect", opts...)
+	stream, err := c.cc.NewStream(ctx, &PlanningPoker_ServiceDesc.Streams[1], "/planning_poker.PlanningPoker/Connect", opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -99,6 +132,7 @@ func (c *planningPokerClient) NewGame(ctx context.Context, in *NewGameRequest, o
 // All implementations must embed UnimplementedPlanningPokerServer
 // for forward compatibility
 type PlanningPokerServer interface {
+	CreateRoom(*CreateRoomRequest, PlanningPoker_CreateRoomServer) error
 	Connect(*ConnectRequest, PlanningPoker_ConnectServer) error
 	Vote(context.Context, *VoteRequest) (*VoteResponse, error)
 	ShowVotes(context.Context, *ShowVotesRequest) (*ShowVotesResponse, error)
@@ -110,6 +144,9 @@ type PlanningPokerServer interface {
 type UnimplementedPlanningPokerServer struct {
 }
 
+func (UnimplementedPlanningPokerServer) CreateRoom(*CreateRoomRequest, PlanningPoker_CreateRoomServer) error {
+	return status.Errorf(codes.Unimplemented, "method CreateRoom not implemented")
+}
 func (UnimplementedPlanningPokerServer) Connect(*ConnectRequest, PlanningPoker_ConnectServer) error {
 	return status.Errorf(codes.Unimplemented, "method Connect not implemented")
 }
@@ -133,6 +170,27 @@ type UnsafePlanningPokerServer interface {
 
 func RegisterPlanningPokerServer(s grpc.ServiceRegistrar, srv PlanningPokerServer) {
 	s.RegisterService(&PlanningPoker_ServiceDesc, srv)
+}
+
+func _PlanningPoker_CreateRoom_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(CreateRoomRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(PlanningPokerServer).CreateRoom(m, &planningPokerCreateRoomServer{stream})
+}
+
+type PlanningPoker_CreateRoomServer interface {
+	Send(*ConnectResponse) error
+	grpc.ServerStream
+}
+
+type planningPokerCreateRoomServer struct {
+	grpc.ServerStream
+}
+
+func (x *planningPokerCreateRoomServer) Send(m *ConnectResponse) error {
+	return x.ServerStream.SendMsg(m)
 }
 
 func _PlanningPoker_Connect_Handler(srv interface{}, stream grpc.ServerStream) error {
@@ -231,6 +289,11 @@ var PlanningPoker_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "CreateRoom",
+			Handler:       _PlanningPoker_CreateRoom_Handler,
+			ServerStreams: true,
+		},
 		{
 			StreamName:    "Connect",
 			Handler:       _PlanningPoker_Connect_Handler,

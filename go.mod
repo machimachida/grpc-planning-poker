@@ -7,6 +7,8 @@ require (
 	google.golang.org/protobuf v1.31.0
 )
 
+require github.com/google/uuid v1.3.0
+
 require (
 	github.com/fatih/color v1.15.0
 	github.com/golang/protobuf v1.5.3 // indirect

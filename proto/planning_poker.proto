@@ -5,6 +5,7 @@ package planning_poker;
 option go_package = "./pb";
 
 service PlanningPoker {
+  rpc CreateRoom(CreateRoomRequest) returns (stream ConnectResponse);
   rpc Connect(ConnectRequest) returns (stream ConnectResponse);
   rpc Vote(VoteRequest) returns (VoteResponse);
   rpc ShowVotes(ShowVotesRequest) returns (ShowVotesResponse);
@@ -17,11 +18,21 @@ enum MessageType {
   SHOW_VOTES = 2;
   LEAVE = 3;
   NEW_GAME = 4;
+  CREATE_ROOM = 5;
+  STATUS = 6;
+  RESET_VOTE = 7;
+}
+
+message CreateRoomRequest {
+  string id = 1;
+  string roomName = 2;
 }
 
 message ConnectRequest {
   string id = 1;
+  string roomId = 2;
 }
+
 message ConnectResponse {
   string id = 1;
   MessageType type = 2;
@@ -31,6 +42,7 @@ message ConnectResponse {
 message VoteRequest {
   string id = 1;
   int32 vote = 2;
+  string roomId = 3;
 }
 message VoteResponse {
   string message = 1;
@@ -38,6 +50,7 @@ message VoteResponse {
 
 message ShowVotesRequest {
   string id = 1;
+  string roomId = 2;
 }
 message ShowVotesResponse {
   string message = 1;
@@ -45,6 +58,7 @@ message ShowVotesResponse {
 
 message NewGameRequest {
   string id = 1;
+  string roomId = 2;
 }
 message NewGameResponse {
   string message = 1;

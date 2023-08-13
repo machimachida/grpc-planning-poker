@@ -20,9 +20,15 @@ const (
 	AVERAGE = "average"
 )
 
+var (
+	roomId string
+)
+
 func main() {
 	name := flag.String("name", "SatoTaro", "name of user")
 	waitSecond := flag.Int("wait", 600, "wait second")
+	isCreatingRoom := flag.Bool("create", false, "create room")
+	joinRoomId := flag.String("join", "", "join room id")
 	flag.Parse()
 
 	conn, err := grpc.Dial("localhost:50051", grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -37,7 +43,24 @@ func main() {
 	}()
 
 	client := pb.NewPlanningPokerClient(conn)
-	stream, cancel := connect(client, *name)
+	var stream pb.PlanningPoker_ConnectClient
+	var cancel context.CancelFunc
+	if *isCreatingRoom {
+		fmt.Print("Please input room name: ")
+		var roomName string
+		for {
+			_, err = fmt.Scan(&roomName)
+			if err == nil {
+				break
+			}
+			log.Println("failed to scan input.", err)
+			println("Please input room name.")
+		}
+		stream, cancel = createRoom(client, *name, roomName)
+	} else {
+		stream, cancel = connect(client, *name, *joinRoomId)
+		roomId = *joinRoomId
+	}
 	go listenServerMessage(stream)
 	go disconnectAfterWaitSecond(cancel, *waitSecond)
 
@@ -52,23 +75,22 @@ func main() {
 		}
 
 		switch n {
-		case -1:
+		case -2:
 			println("Disconnect...")
 			disconnect(cancel)
-		case -2:
-			showVotes(client, *name)
-			continue
 		case -3:
-			newGame(client)
+			showVotes(client, *name, roomId)
+			continue
+		case -4:
+			newGame(client, *name, roomId)
 			continue
 		default:
-			if n > 0 {
-				vote(client, *name, n)
-				println("Waiting others' votes...")
+			if n > 0 || n == -1 {
+				vote(client, *name, roomId, n)
 				continue
 			}
 
-			println("Please input natural number, -1(disconnect), -2(show votes) or -3(new game).")
+			println("Please input natural number, -1(reset your vote), -2(disconnect), -3(show votes) or -4(new game).")
 		}
 	}
 }
@@ -79,6 +101,8 @@ func listenServerMessage(stream pb.PlanningPoker_ConnectClient) {
 
 		// 異常系
 		if err != nil {
+			// TODO: ルームが見つからなかった場合やルームが作成された場合もここへ遷移する(Context.Errなし)。要対応
+
 			// contextがキャンセルされた場合は、正常系として扱う
 			if stream.Context().Err() == context.Canceled {
 				log.Println("server is disconnected.")
@@ -104,9 +128,21 @@ func disconnectAfterWaitSecond(cancel context.CancelFunc, waitSecond int) {
 	os.Exit(0)
 }
 
-func connect(client pb.PlanningPokerClient, id string) (pb.PlanningPoker_ConnectClient, context.CancelFunc) {
+func createRoom(client pb.PlanningPokerClient, name, roomName string) (pb.PlanningPoker_ConnectClient, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(context.Background())
-	stream, err := client.Connect(ctx, &pb.ConnectRequest{Id: id})
+	stream, err := client.CreateRoom(ctx, &pb.CreateRoomRequest{
+		Id:       name,
+		RoomName: roomName,
+	})
+	if err != nil {
+		panic(err)
+	}
+	return stream, cancel
+}
+
+func connect(client pb.PlanningPokerClient, id, roomId string) (pb.PlanningPoker_ConnectClient, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+	stream, err := client.Connect(ctx, &pb.ConnectRequest{Id: id, RoomId: roomId})
 	if err != nil {
 		panic(err)
 	}
@@ -117,26 +153,40 @@ func disconnect(cancel context.CancelFunc) {
 	cancel()
 }
 
-func vote(client pb.PlanningPokerClient, id string, vote int32) {
-	recv, err := client.Vote(context.Background(), &pb.VoteRequest{Id: id, Vote: vote})
+func vote(client pb.PlanningPokerClient, id, roomId string, vote int32) {
+	recv, err := client.Vote(context.Background(), &pb.VoteRequest{Id: id, Vote: vote, RoomId: roomId})
 	if err != nil {
 		log.Println("failed to vote.", err)
+		return
+	}
+	if recv == nil {
+		log.Println("failed to vote. recv is nil.")
+		return
 	}
 	println(recv.Message)
 }
 
-func showVotes(client pb.PlanningPokerClient, id string) {
-	recv, err := client.ShowVotes(context.Background(), &pb.ShowVotesRequest{Id: id})
+func showVotes(client pb.PlanningPokerClient, id, roomId string) {
+	recv, err := client.ShowVotes(context.Background(), &pb.ShowVotesRequest{Id: id, RoomId: roomId})
 	if err != nil {
 		log.Println("failed to show votes.", err)
+		return
+	}
+	if recv == nil {
+		log.Println("failed to show vote. recv is nil.")
+		return
 	}
 	println(recv.Message)
 }
 
-func newGame(client pb.PlanningPokerClient) {
-	recv, err := client.NewGame(context.Background(), &pb.NewGameRequest{})
+func newGame(client pb.PlanningPokerClient, id, roomId string) {
+	recv, err := client.NewGame(context.Background(), &pb.NewGameRequest{Id: id, RoomId: roomId})
 	if err != nil {
 		log.Println("failed to new game.", err)
+	}
+	if recv == nil {
+		log.Println("failed to show vote. recv is nil.")
+		return
 	}
 	println(recv.Message)
 }
@@ -166,5 +216,23 @@ func printlnBroadcastMessage(message *pb.ConnectResponse) {
 		}
 	case pb.MessageType_LEAVE:
 		println(color.HiGreenString(message.Message + " left"))
+	case pb.MessageType_CREATE_ROOM:
+		println(color.CyanString("room " + message.Message + " created"))
+		roomId = message.Message
+	case pb.MessageType_STATUS:
+		// ユーザの状態情報を持つmessage.MessageがJSON形式の文字列になっているので、パースして表示する
+		var status map[string]bool
+		err := json.Unmarshal([]byte(message.Message), &status)
+		if err != nil {
+			log.Println("failed to unmarshal message.", err)
+		}
+		println(color.CyanString("room status"))
+		for k, v := range status {
+			println(color.CyanString(fmt.Sprintf("%s: %t", k, v)))
+		}
+	case pb.MessageType_NEW_GAME:
+		println(color.YellowString(message.Message))
+	case pb.MessageType_RESET_VOTE:
+		println(color.HiGreenString(message.Message + " reset their vote"))
 	}
 }
