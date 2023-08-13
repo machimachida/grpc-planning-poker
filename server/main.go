@@ -18,6 +18,7 @@ import (
 
 const (
 	AVERAGE = "average"
+	PORT    = 80
 )
 
 var (
@@ -25,14 +26,14 @@ var (
 )
 
 func main() {
-	lis, err := net.Listen("tcp", ":50051")
+	lis, err := net.Listen("tcp", ":80")
 	if err != nil {
 		log.Fatalf("Failed to listen: %v", err)
 	}
 
 	s := grpc.NewServer()
 	pb.RegisterPlanningPokerServer(s, &Server{})
-	log.Println("Server is running on port 50051")
+	log.Println("Server is running on port 80")
 	if err := s.Serve(lis); err != nil {
 		log.Fatalf("Failed to serve: %v", err)
 	}
