@@ -1,0 +1,30 @@
+name: Deploy Server to Azure Web App
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v2
+
+    - name: Setup Go
+      uses: actions/setup-go@v2
+      with:
+        go-version: 1.21.x
+
+    - name: Build gRPC server
+      run: go build -o server ./server/main.go
+
+    - name: Deploy to Azure App Service
+      uses: azure/webapps-deploy@v2
+      with:
+        app-name: ${{ secrets.AZURE_APP_NAME }}
+        publish-profile: ${{ secrets.AZURE_PUBLISH_PROFILE }}
+        slot-name: ${{ secrets.AZURE_SLOT_NAME }}
+        package: server
