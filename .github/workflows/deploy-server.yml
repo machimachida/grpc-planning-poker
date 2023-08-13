@@ -3,7 +3,7 @@ name: Deploy Server to Azure Web App
 on:
   push:
     branches:
-      - main
+      # - main
 
 jobs:
   deploy:
