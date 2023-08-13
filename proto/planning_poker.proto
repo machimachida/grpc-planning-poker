@@ -8,7 +8,15 @@ service PlanningPoker {
   rpc Connect(ConnectRequest) returns (stream ConnectResponse);
   rpc Vote(VoteRequest) returns (VoteResponse);
   rpc ShowVotes(ShowVotesRequest) returns (ShowVotesResponse);
-  rpc Disconnect(DisconnectRequest) returns (DisconnectResponse);
+  rpc NewGame(NewGameRequest) returns (NewGameResponse);
+}
+
+enum MessageType {
+  JOIN = 0;
+  VOTE = 1;
+  SHOW_VOTES = 2;
+  LEAVE = 3;
+  NEW_GAME = 4;
 }
 
 message ConnectRequest {
@@ -16,7 +24,8 @@ message ConnectRequest {
 }
 message ConnectResponse {
   string id = 1;
-  string message = 2;
+  MessageType type = 2;
+  string message = 3;
 }
 
 message VoteRequest {
@@ -34,9 +43,9 @@ message ShowVotesResponse {
   string message = 1;
 }
 
-message DisconnectRequest {
+message NewGameRequest {
   string id = 1;
 }
-message DisconnectResponse {
+message NewGameResponse {
   string message = 1;
 }

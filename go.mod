@@ -1,6 +1,6 @@
 module github.com/machimachida/grpc-planning-poker
 
-go 1.20
+go 1.21
 
 require (
 	google.golang.org/grpc v1.56.1
