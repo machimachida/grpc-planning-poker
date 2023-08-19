@@ -1,0 +1,12 @@
+version: '3'
+
+# 開発時にenvoyを利用するためのComposeファイル
+
+services:
+  envoy:
+    image: envoyproxy/envoy:v1.27-latest
+    container_name: envoy-grpc-proxy
+    volumes:
+      - ./envoy.yaml:/etc/envoy/envoy.yaml
+    ports:
+      - "9000:9000"

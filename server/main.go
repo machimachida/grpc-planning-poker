@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/google/uuid"
 	"log"
 	"net"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 
 	"google.golang.org/grpc"
 
@@ -18,7 +19,6 @@ import (
 
 const (
 	AVERAGE = "average"
-	PORT    = 80
 )
 
 var (
@@ -26,14 +26,14 @@ var (
 )
 
 func main() {
-	lis, err := net.Listen("tcp", ":80")
+	lis, err := net.Listen("tcp", ":50051")
 	if err != nil {
 		log.Fatalf("Failed to listen: %v", err)
 	}
 
 	s := grpc.NewServer()
 	pb.RegisterPlanningPokerServer(s, &Server{})
-	log.Println("Server is running on port 80")
+	log.Println("Server is running on port 50051")
 	if err := s.Serve(lis); err != nil {
 		log.Fatalf("Failed to serve: %v", err)
 	}
