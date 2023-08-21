@@ -1,113 +1,237 @@
-import Image from 'next/image'
+'use client';
+import AsyncLock from 'async-lock';
+import { ClientReadableStream } from 'grpc-web';
+import { useState } from 'react';
+import { useForm } from 'react-hook-form';
+
+import { ConnectRequest, ConnectResponse, CreateRoomRequest, MessageType } from "@/proto/planning_poker_pb";
+import { PlanningPokerClient } from '@/proto/Planning_pokerServiceClientPb';
+
+const client = new PlanningPokerClient("http://localhost:9000");
+
+type StartNewGameConfig = {
+  room: string; // room名かroomIDを入れる(暫定的)
+  userName: string;
+}
+
+type Player = {
+  name: string;
+  isVoted: boolean;
+  vote: number | null;
+}
 
 export default function Home() {
+  var lock = new AsyncLock();
+  const [stream, setStream] = useState<ClientReadableStream<ConnectResponse> | null>(null);
+  const [response, setResponse] = useState<ConnectResponse | null>(null);
+  const [players, setPlayers] = useState<Map<string, Player>>(new Map());
+
+  const createNewRoom = (config: StartNewGameConfig) => {
+    console.log("create new room");
+    const req = new CreateRoomRequest
+    req.setId(config.userName);
+    req.setRoomname(config.room);
+
+    if(stream !== null) {
+      // TODO: 既存のストリームを終了させる処理をおこなう。新規部屋作成処理は続行する。
+      console.error("stream is already exist");
+      return;
+    }
+
+    const connection = client.createRoom(req);
+    connection.on("data", (res: ConnectResponse) => {
+      setResponse(res);
+    });
+  };
+
+  const joinRoom = (config: StartNewGameConfig) => {
+    console.log("join room");
+    const req = new ConnectRequest();
+    req.setId(config.userName);
+    req.setRoomid(config.room);
+
+    if(stream !== null) {
+      // TODO: 既存のストリームを終了させる処理をおこなう。部屋参加処理は続行する。
+      console.error("stream is already exist");
+      return;
+    }
+
+    const connection = client.connect(req);
+    connection.on("data", (res: ConnectResponse) => {
+      setResponse(res);
+    });
+  };
+
+  const receiveMessage = (res: ConnectResponse) => {
+    console.log("receive message", res);
+    lock.acquire("receiveMessage", () => {
+      switch(res.getType()) {
+        case MessageType.JOIN:
+          players.set(res.getId(), {name: res.getId(), isVoted: false, vote: null});
+          setPlayers(players);
+
+    // TODONOW
+    // メッセージの種類によって処理を分岐させる
+  }
+
+
   return (
-    <main className="flex min-h-screen flex-col items-center justify-between p-24">
+    <main className="flex min-h-screen items-center justify-between p-24">
+      <div className='w-1/3'>
+        <NewGame createNewRoom={createNewRoom} joinRoom={joinRoom} />
+      </div>
       <div className="z-10 max-w-5xl w-full items-center justify-between font-mono text-sm lg:flex">
-        <p className="fixed left-0 top-0 flex w-full justify-center border-b border-gray-300 bg-gradient-to-b from-zinc-200 pb-6 pt-8 backdrop-blur-2xl dark:border-neutral-800 dark:bg-zinc-800/30 dark:from-inherit lg:static lg:w-auto  lg:rounded-xl lg:border lg:bg-gray-200 lg:p-4 lg:dark:bg-zinc-800/30">
-          Get started by editing&nbsp;
-          <code className="font-mono font-bold">src/app/page.tsx</code>
-        </p>
-        <div className="fixed bottom-0 left-0 flex h-48 w-full items-end justify-center bg-gradient-to-t from-white via-white dark:from-black dark:via-black lg:static lg:h-auto lg:w-auto lg:bg-none">
-          <a
-            className="pointer-events-none flex place-items-center gap-2 p-8 lg:pointer-events-auto lg:p-0"
-            href="https://vercel.com?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            By{' '}
-            <Image
-              src="/vercel.svg"
-              alt="Vercel Logo"
-              className="dark:invert"
-              width={100}
-              height={24}
-              priority
-            />
-          </a>
-        </div>
-      </div>
-
-      <div className="relative flex place-items-center before:absolute before:h-[300px] before:w-[480px] before:-translate-x-1/2 before:rounded-full before:bg-gradient-radial before:from-white before:to-transparent before:blur-2xl before:content-[''] after:absolute after:-z-20 after:h-[180px] after:w-[240px] after:translate-x-1/3 after:bg-gradient-conic after:from-sky-200 after:via-blue-200 after:blur-2xl after:content-[''] before:dark:bg-gradient-to-br before:dark:from-transparent before:dark:to-blue-700 before:dark:opacity-10 after:dark:from-sky-900 after:dark:via-[#0141ff] after:dark:opacity-40 before:lg:h-[360px] z-[-1]">
-        <Image
-          className="relative dark:drop-shadow-[0_0_0.3rem_#ffffff70] dark:invert"
-          src="/next.svg"
-          alt="Next.js Logo"
-          width={180}
-          height={37}
-          priority
-        />
-      </div>
-
-      <div className="mb-32 grid text-center lg:max-w-5xl lg:w-full lg:mb-0 lg:grid-cols-4 lg:text-left">
-        <a
-          href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className={`mb-3 text-2xl font-semibold`}>
-            Docs{' '}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className={`m-0 max-w-[30ch] text-sm opacity-50`}>
-            Find in-depth information about Next.js features and API.
-          </p>
-        </a>
-
-        <a
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className={`mb-3 text-2xl font-semibold`}>
-            Learn{' '}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className={`m-0 max-w-[30ch] text-sm opacity-50`}>
-            Learn about Next.js in an interactive course with&nbsp;quizzes!
-          </p>
-        </a>
-
-        <a
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className={`mb-3 text-2xl font-semibold`}>
-            Templates{' '}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className={`m-0 max-w-[30ch] text-sm opacity-50`}>
-            Explore the Next.js 13 playground.
-          </p>
-        </a>
-
-        <a
-          href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className={`mb-3 text-2xl font-semibold`}>
-            Deploy{' '}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className={`m-0 max-w-[30ch] text-sm opacity-50`}>
-            Instantly deploy your Next.js site to a shareable URL with Vercel.
-          </p>
-        </a>
+        {response && (
+          <>
+            <p>{response.getId()}</p>
+            <p>{response.getType().toString()}</p>
+            <p>{response.getMessage()}</p>
+          </>
+        )}
       </div>
     </main>
   )
+}
+
+/* ゲーム管理用コンポーネント */
+
+type NewGameProps = {
+  createNewRoom: (config: StartNewGameConfig) => void;
+  joinRoom: (config: StartNewGameConfig) => void;
+}
+
+const NewGame: React.FC<NewGameProps> = ({ createNewRoom, joinRoom }) => {
+  return (
+    <div className="flex min-h-full flex-1 flex-col px-6 py-12 lg:px-8">
+      <NewGameCard title='新規ルームを作成' form={<NewRoomForm connectRoom={createNewRoom} />} />
+      <NewGameCard title='既存のルームへ参加' form={<JoinRoomForm connectRoom={joinRoom} />} />
+    </div>
+  );
+}
+
+type NewRoomFormData = {
+  roomName: string;
+  userName: string;
+}
+
+type NewRoomFormProps = {
+  connectRoom: (config: StartNewGameConfig) => void;
+}
+
+const NewRoomForm: React.FC<NewRoomFormProps> = ({ connectRoom }) => {
+  const { register, handleSubmit } = useForm<NewRoomFormData>();
+
+  const onSubmit = (data: NewRoomFormData) => {
+    connectRoom({room: data.roomName, userName: data.userName})
+  };
+
+  return (
+    <form className="space-y-6" action="#" method="POST" onSubmit={handleSubmit(onSubmit)}>
+      <div>
+        <label htmlFor='roomName' className="block text-sm font-medium leading-6 text-gray-900">
+          ルーム名
+        </label>
+        <div className="mt-2">
+          <input
+            id='roomName'
+            required
+            className="block w-full rounded-md border-0 px-3 py-1.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:text-sm sm:leading-6"
+            {...register('roomName')} />
+        </div>
+      </div>
+      <div>
+        <label htmlFor='userName' className="block text-sm font-medium leading-6 text-gray-900">
+          ユーザ名
+        </label>
+        <div className="mt-2">
+          <input
+            id="userName"
+            required
+            className="block w-full rounded-md border-0 px-3 py-1.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:text-sm sm:leading-6"
+            {...register('userName')}
+          />
+        </div>
+      </div>
+      <button
+        type='submit'
+        className="flex w-full justify-center rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold leading-6 text-white shadow-sm hover:bg-indigo-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
+      >
+        ルームを作成
+      </button>
+    </form>
+  );
+}
+
+type JoinRoomFormData = {
+  roomId: string;
+  userName: string;
+}
+
+type JoinRoomFormProps = {
+  connectRoom: (config: StartNewGameConfig) => void;
+}
+
+const JoinRoomForm: React.FC<JoinRoomFormProps> = ({ connectRoom }) => {
+  const { register, handleSubmit } = useForm<JoinRoomFormData>();
+
+  const onSubmit = (data: JoinRoomFormData) => {
+    connectRoom({room: data.roomId, userName: data.userName});
+  };
+
+  return (
+    <form className="space-y-6" action="#" method="POST" onSubmit={handleSubmit(onSubmit)}>
+      <div>
+        <label htmlFor='roomId' className="block text-sm font-medium leading-6 text-gray-900">
+          ルームID
+        </label>
+        <div className="mt-2">
+          <input
+            id='roomId'
+            required
+            className="block w-full rounded-md border-0 px-3 py-1.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:text-sm sm:leading-6"
+            {...register('roomId')} />
+        </div>
+      </div>
+      <div>
+        <label htmlFor='userName' className="block text-sm font-medium leading-6 text-gray-900">
+          ユーザ名
+        </label>
+        <div className="mt-2">
+          <input
+            id="userName"
+            required
+            className="block w-full rounded-md border-0 px-3 py-1.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:text-sm sm:leading-6"
+            {...register('userName')}
+          />
+        </div>
+      </div>
+      <button
+        type='submit'
+        className="flex w-full justify-center rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold leading-6 text-white shadow-sm hover:bg-indigo-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
+      >
+        ルームへ参加
+      </button>
+    </form>
+  );
+}
+
+type NewGameCardProps = {
+  title: string;
+  form: React.ReactNode;
+}
+
+const NewGameCard: React.FC<NewGameCardProps> = ({title, form}) => {
+  return (
+    <>
+      <div className="sm:mx-auto sm:w-full sm:max-w-sm">
+        <h2 className="mt-10 text-center text-2xl font-bold leading-9 tracking-tight text-gray-900">
+          {title}
+        </h2>
+      </div>
+
+      <div className="mt-10 sm:mx-auto sm:w-full sm:max-w-sm">
+        {form}
+      </div>
+    </>
+  );
 }
