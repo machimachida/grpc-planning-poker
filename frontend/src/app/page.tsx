@@ -69,6 +69,32 @@ export default function Home() {
         case MessageType.JOIN:
           players.set(res.getId(), {name: res.getId(), isVoted: false, vote: null});
           setPlayers(players);
+          break;
+        case MessageType.VOTE:
+          const player = players.get(res.getId())
+          if(player) {
+              player.isVoted = true;
+              setPlayers(players);
+          } else {
+            players.set(res.getId(), {name: res.getId(), isVoted: true, vote: null});
+            setPlayers(players);
+          }
+          break;
+        case MessageType.SHOW_VOTES:
+          const votes: Map<string, number> = JSON.parse(res.getMessage());
+            for(const [key, value] of Object.entries(votes)) {
+              const player = players.get(key);
+              if(player) {
+                player.vote = value;
+                setPlayers(players);
+              }
+            }
+
+        case MessageType.LEAVE:
+          players.delete(res.getId());
+          setPlayers(players);
+          break;
+      }
 
     // TODONOW
     // メッセージの種類によって処理を分岐させる
