@@ -31,7 +31,7 @@ func main() {
 	joinRoomId := flag.String("join", "", "join room id")
 	flag.Parse()
 
-	conn, err := grpc.Dial("localhost:9000", grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.Dial("localhost:51000", grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		panic(err)
 	}

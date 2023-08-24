@@ -9,4 +9,4 @@ services:
     volumes:
       - ./envoy.yaml:/etc/envoy/envoy.yaml
     ports:
-      - "9000:9000"
+      - "51000:9000"

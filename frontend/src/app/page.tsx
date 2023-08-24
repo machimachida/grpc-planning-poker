@@ -1,13 +1,13 @@
 'use client';
 import AsyncLock from 'async-lock';
-import { ClientReadableStream } from 'grpc-web';
-import { useState } from 'react';
-import { useForm } from 'react-hook-form';
+import {ClientReadableStream} from 'grpc-web';
+import {useState} from 'react';
+import {useForm} from 'react-hook-form';
 
-import { ConnectRequest, ConnectResponse, CreateRoomRequest, MessageType } from "@/proto/planning_poker_pb";
-import { PlanningPokerClient } from '@/proto/Planning_pokerServiceClientPb';
+import {ConnectRequest, ConnectResponse, CreateRoomRequest, MessageType} from "@/proto/planning_poker_pb";
+import {PlanningPokerClient} from '@/proto/Planning_pokerServiceClientPb';
 
-const client = new PlanningPokerClient("http://localhost:9000");
+const client = new PlanningPokerClient("http://localhost:51000");
 
 type StartNewGameConfig = {
   room: string; // room名かroomIDを入れる(暫定的)
@@ -21,7 +21,7 @@ type Player = {
 }
 
 export default function Home() {
-  var lock = new AsyncLock();
+  let lock = new AsyncLock();
   const [stream, setStream] = useState<ClientReadableStream<ConnectResponse> | null>(null);
   const [response, setResponse] = useState<ConnectResponse | null>(null);
   const [players, setPlayers] = useState<Map<string, Player>>(new Map());
@@ -40,6 +40,8 @@ export default function Home() {
 
     const connection = client.createRoom(req);
     connection.on("data", (res: ConnectResponse) => {
+      console.log(res);
+      receiveMessage(res);
       setResponse(res);
     });
   };
@@ -58,6 +60,8 @@ export default function Home() {
 
     const connection = client.connect(req);
     connection.on("data", (res: ConnectResponse) => {
+      console.log(res);
+      receiveMessage(res);
       setResponse(res);
     });
   };
@@ -65,16 +69,16 @@ export default function Home() {
   const receiveMessage = (res: ConnectResponse) => {
     console.log("receive message", res);
     lock.acquire("receiveMessage", () => {
-      switch(res.getType()) {
+      switch (res.getType()) {
         case MessageType.JOIN:
           players.set(res.getId(), {name: res.getId(), isVoted: false, vote: null});
           setPlayers(players);
           break;
         case MessageType.VOTE:
           const player = players.get(res.getId())
-          if(player) {
-              player.isVoted = true;
-              setPlayers(players);
+          if (player) {
+            player.isVoted = true;
+            setPlayers(players);
           } else {
             players.set(res.getId(), {name: res.getId(), isVoted: true, vote: null});
             setPlayers(players);
@@ -82,22 +86,37 @@ export default function Home() {
           break;
         case MessageType.SHOW_VOTES:
           const votes: Map<string, number> = JSON.parse(res.getMessage());
-            for(const [key, value] of Object.entries(votes)) {
-              const player = players.get(key);
-              if(player) {
-                player.vote = value;
-                setPlayers(players);
-              }
+          for (const [key, value] of Object.entries(votes)) {
+            const player = players.get(key);
+            if (player) {
+              player.vote = value;
+              setPlayers(players);
             }
-
+          }
+          break;
         case MessageType.LEAVE:
           players.delete(res.getId());
           setPlayers(players);
           break;
+        case MessageType.NEW_GAME:
+          for(let k in players.keys()) {
+            players.set(k, {name: k, isVoted: false, vote: null})
+          }
+          setPlayers(players);
+          break;
+        case MessageType.CREATE_ROOM:
+          // 現状、特にメッセージを表示する必要はない
+          break;
+        case MessageType.STATUS:
+          const playerStatuses: Map<string, boolean> = JSON.parse(res.getMessage());
+          const initPlayers = new Map<string, Player>();
+          for (const [key, value] of Object.entries(playerStatuses)) {
+            initPlayers.set(key, {name: key, isVoted: value, vote: null});
+            setPlayers(initPlayers);
+          }
+          break;
       }
-
-    // TODONOW
-    // メッセージの種類によって処理を分岐させる
+    });
   }
 
 
@@ -112,6 +131,19 @@ export default function Home() {
             <p>{response.getId()}</p>
             <p>{response.getType().toString()}</p>
             <p>{response.getMessage()}</p>
+            <p>
+              {
+                (players && Array.from(players.values()).map((player) => {
+                  return (
+                    <div key={player.name}>
+                      <p>{player.name}</p>
+                      <p>{player.isVoted ? "投票済み" : "未投票"}</p>
+                      <p>{player.vote}</p>
+                    </div>
+                  );
+                }))
+              }
+            </p>
           </>
         )}
       </div>
