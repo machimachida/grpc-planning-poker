@@ -25,9 +25,9 @@ export default function Home() {
   const [stream, setStream] = useState<ClientReadableStream<ConnectResponse> | null>(null);
   const [response, setResponse] = useState<ConnectResponse | null>(null);
   const [players, setPlayers] = useState<Map<string, Player>>(new Map());
+  const [roomId, setRoomId] = useState<string>("");
 
   const createNewRoom = (config: StartNewGameConfig) => {
-    console.log("create new room");
     const req = new CreateRoomRequest
     req.setId(config.userName);
     req.setRoomname(config.room);
@@ -39,15 +39,13 @@ export default function Home() {
     }
 
     const connection = client.createRoom(req);
-    connection.on("data", (res: ConnectResponse) => {
-      console.log(res);
-      receiveMessage(res);
+    connection.on("data", async (res: ConnectResponse) => {
+      await receiveMessage(res);
       setResponse(res);
     });
   };
 
   const joinRoom = (config: StartNewGameConfig) => {
-    console.log("join room");
     const req = new ConnectRequest();
     req.setId(config.userName);
     req.setRoomid(config.room);
@@ -59,19 +57,18 @@ export default function Home() {
     }
 
     const connection = client.connect(req);
-    connection.on("data", (res: ConnectResponse) => {
-      console.log(res);
-      receiveMessage(res);
+    connection.on("data", async (res: ConnectResponse) => {
+      await receiveMessage(res);
       setResponse(res);
     });
   };
 
-  const receiveMessage = (res: ConnectResponse) => {
+  const receiveMessage = async (res: ConnectResponse) => {
     console.log("receive message", res);
-    lock.acquire("receiveMessage", () => {
+    await lock.acquire("receiveMessage", () => {
       switch (res.getType()) {
         case MessageType.JOIN:
-          players.set(res.getId(), {name: res.getId(), isVoted: false, vote: null});
+          players.set(res.getMessage(), {name: res.getMessage(), isVoted: false, vote: null});
           setPlayers(players);
           break;
         case MessageType.VOTE:
@@ -105,17 +102,25 @@ export default function Home() {
           setPlayers(players);
           break;
         case MessageType.CREATE_ROOM:
-          // 現状、特にメッセージを表示する必要はない
+          setRoomId(res.getMessage());
           break;
         case MessageType.STATUS:
           const playerStatuses: Map<string, boolean> = JSON.parse(res.getMessage());
           const initPlayers = new Map<string, Player>();
+          console.log(playerStatuses);
           for (const [key, value] of Object.entries(playerStatuses)) {
             initPlayers.set(key, {name: key, isVoted: value, vote: null});
             setPlayers(initPlayers);
           }
           break;
+        case MessageType.RESET_VOTE:
+          for(let k in players.keys()) {
+            players.set(k, {name: k, isVoted: false, vote: null})
+          }
+          setPlayers(players);
+            break;
       }
+      console.log(players);
     });
   }
 
@@ -125,27 +130,32 @@ export default function Home() {
       <div className='w-1/3'>
         <NewGame createNewRoom={createNewRoom} joinRoom={joinRoom} />
       </div>
-      <div className="z-10 max-w-5xl w-full items-center justify-between font-mono text-sm lg:flex">
+      <div className="z-10 max-w-5xl w-full items-center justify-between font-mono text-sm">
+        <div>
+          <p>roomID: {roomId}</p>
+        </div>
         {response && (
           <>
+            <p>レスポンス情報</p>
             <p>{response.getId()}</p>
             <p>{response.getType().toString()}</p>
             <p>{response.getMessage()}</p>
-            <p>
-              {
-                (players && Array.from(players.values()).map((player) => {
-                  return (
-                    <div key={player.name}>
-                      <p>{player.name}</p>
-                      <p>{player.isVoted ? "投票済み" : "未投票"}</p>
-                      <p>{player.vote}</p>
-                    </div>
-                  );
-                }))
-              }
-            </p>
           </>
         )}
+        <div>
+          <p>プレイヤー情報</p>
+          {
+            Array.from(players.values()).map((player) => {
+              return (
+                <div key={player.name}>
+                  <p>{player.name}</p>
+                  <p>{player.isVoted ? "投票済み" : "未投票"}</p>
+                  <p>{player.vote}</p>
+                </div>
+              );
+            })
+          }
+        </div>
       </div>
     </main>
   )
