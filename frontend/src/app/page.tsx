@@ -1,31 +1,39 @@
 'use client';
 import AsyncLock from 'async-lock';
-import {ClientReadableStream} from 'grpc-web';
-import {useState} from 'react';
-import {useForm} from 'react-hook-form';
+import { ClientReadableStream } from 'grpc-web';
+import { useState } from 'react';
 
-import {ConnectRequest, ConnectResponse, CreateRoomRequest, MessageType} from "@/proto/planning_poker_pb";
-import {PlanningPokerClient} from '@/proto/Planning_pokerServiceClientPb';
+import JoinRoomForm from '@/app/components/JoinRoomForm';
+import NewGameCard from '@/app/components/NewGameCard';
+import NewRoomForm from '@/app/components/NewRoomForm';
+import { StartNewGameConfig } from '@/app/types/newGame';
+import { Player } from '@/app/types/player';
+import {
+  ConnectRequest,
+  ConnectResponse,
+  CreateRoomRequest,
+  MessageType,
+  VoteRequest,
+  ShowVotesRequest,
+  NewGameRequest,
+} from '@/proto/planning_poker_pb';
+import { PlanningPokerClient } from '@/proto/Planning_pokerServiceClientPb';
+import VoteButton from './components/VoteButton';
+import UserState from './components/UserState';
 
-const client = new PlanningPokerClient("http://localhost:51000");
-
-type StartNewGameConfig = {
-  room: string; // room名かroomIDを入れる(暫定的)
-  userName: string;
-}
-
-type Player = {
-  name: string;
-  isVoted: boolean;
-  vote: number | null;
-}
+const client = new PlanningPokerClient('http://localhost:51000');
+const FIBONACCHI = [0, 1, 2, 3, 5, 8, 13, 21];
+const VOTE_RESET_NUMBER = -1;
 
 export default function Home() {
   let lock = new AsyncLock();
   const [stream, setStream] = useState<ClientReadableStream<ConnectResponse> | null>(null);
   const [response, setResponse] = useState<ConnectResponse | null>(null);
   const [players, setPlayers] = useState<Map<string, Player>>(new Map());
-  const [roomId, setRoomId] = useState<string>("");
+  const [roomId, setRoomId] = useState<string>('');
+  const [name, setName] = useState<string>('');
+  const [votedNumber, setVotedNumber] = useState<number | null>(null);
+  const [isShown, setIsShown] = useState<boolean>(false);
 
   const createNewRoom = (config: StartNewGameConfig) => {
     const req = new CreateRoomRequest
@@ -34,15 +42,17 @@ export default function Home() {
 
     if(stream !== null) {
       // TODO: 既存のストリームを終了させる処理をおこなう。新規部屋作成処理は続行する。
-      console.error("stream is already exist");
+      console.error('stream is already exist');
       return;
     }
 
     const connection = client.createRoom(req);
-    connection.on("data", async (res: ConnectResponse) => {
+    connection.on('data', async (res: ConnectResponse) => {
       await receiveMessage(res);
       setResponse(res);
     });
+
+    setName(config.userName);
   };
 
   const joinRoom = (config: StartNewGameConfig) => {
@@ -52,34 +62,91 @@ export default function Home() {
 
     if(stream !== null) {
       // TODO: 既存のストリームを終了させる処理をおこなう。部屋参加処理は続行する。
-      console.error("stream is already exist");
+      console.error('stream is already exist');
       return;
     }
 
     const connection = client.connect(req);
-    connection.on("data", async (res: ConnectResponse) => {
+    connection.on('data', async (res: ConnectResponse) => {
       await receiveMessage(res);
       setResponse(res);
+    });
+
+    setName(config.userName);
+    setRoomId(config.room);
+  };
+
+  const vote = (num: number) => {
+    const req = new VoteRequest();
+
+    if(num === votedNumber) {
+      num = VOTE_RESET_NUMBER;
+    }
+
+    req.setId(name);
+    req.setRoomid(roomId);
+    req.setVote(num);
+
+    client.vote(req, {}, (err, res) => {
+      if (err) {
+        console.error(err);
+        return;
+      }
+
+      console.log(res);
+
+      if(num === VOTE_RESET_NUMBER) {
+        setVotedNumber(null);
+        return;
+      }
+      setVotedNumber(num);
+    });
+  };
+
+  const showVotes = () => {
+    const req = new ShowVotesRequest();
+    req.setRoomid(roomId);
+
+    client.showVotes(req, {}, (err, res) => {
+      if (err) {
+        console.error(err);
+        return;
+      }
+
+      console.log(res);
+    });
+  };
+
+  const startNewGame = () => {
+    const req = new NewGameRequest();
+    req.setRoomid(roomId);
+
+    client.newGame(req, {}, (err, res) => {
+      if (err) {
+        console.error(err);
+        return;
+      }
+
+      console.log(res);
     });
   };
 
   const receiveMessage = async (res: ConnectResponse) => {
-    console.log("receive message", res);
-    await lock.acquire("receiveMessage", () => {
+    console.log('receive message', res);
+    await lock.acquire('receiveMessage', () => {
       switch (res.getType()) {
         case MessageType.JOIN:
           players.set(res.getMessage(), {name: res.getMessage(), isVoted: false, vote: null});
           setPlayers(players);
           break;
         case MessageType.VOTE:
-          const player = players.get(res.getId())
+          const player = players.get(res.getMessage())
           if (player) {
             player.isVoted = true;
-            setPlayers(players);
           } else {
-            players.set(res.getId(), {name: res.getId(), isVoted: true, vote: null});
-            setPlayers(players);
+            players.set(res.getMessage(), {name: res.getMessage(), isVoted: true, vote: null});
           }
+          setPlayers(players);
           break;
         case MessageType.SHOW_VOTES:
           const votes: Map<string, number> = JSON.parse(res.getMessage());
@@ -89,79 +156,80 @@ export default function Home() {
               player.vote = value;
               setPlayers(players);
             }
+            setIsShown(true);
           }
           break;
         case MessageType.LEAVE:
-          players.delete(res.getId());
+          players.delete(res.getMessage());
           setPlayers(players);
           break;
         case MessageType.NEW_GAME:
+          const newPlayers = new Map<string, Player>();
           for(let k in players.keys()) {
-            players.set(k, {name: k, isVoted: false, vote: null})
+            newPlayers.set(k, {name: k, isVoted: false, vote: null})
           }
-          setPlayers(players);
+          setPlayers(newPlayers);
+          setIsShown(false);
           break;
         case MessageType.CREATE_ROOM:
           setRoomId(res.getMessage());
           break;
         case MessageType.STATUS:
           const playerStatuses: Map<string, boolean> = JSON.parse(res.getMessage());
-          const initPlayers = new Map<string, Player>();
-          console.log(playerStatuses);
           for (const [key, value] of Object.entries(playerStatuses)) {
-            initPlayers.set(key, {name: key, isVoted: value, vote: null});
-            setPlayers(initPlayers);
+            players.set(key, {name: key, isVoted: value, vote: null});
+            setPlayers(players);
           }
           break;
         case MessageType.RESET_VOTE:
-          for(let k in players.keys()) {
-            players.set(k, {name: k, isVoted: false, vote: null})
+          const resettingPlayer = players.get(res.getMessage())
+          if (resettingPlayer) {
+            resettingPlayer.isVoted = false;
+          } else {
+            players.set(res.getMessage(), {name: res.getMessage(), isVoted: false, vote: null});
           }
           setPlayers(players);
-            break;
+          break;
       }
       console.log(players);
     });
   }
 
-
   return (
-    <main className="flex min-h-screen items-center justify-between p-24">
-      <div className='w-1/3'>
+    <main className='md:flex p-4 md:p-8'>
+      <div className='md:w-1/3 px-6'>
         <NewGame createNewRoom={createNewRoom} joinRoom={joinRoom} />
       </div>
-      <div className="z-10 max-w-5xl w-full items-center justify-between font-mono text-sm">
-        <div>
-          <p>roomID: {roomId}</p>
+      <div className='mt-6 md:mt-0 md:w-2/3'>
+        <div className='mb-4'>
+          <h2 className='text-2xl font-bold leading-9 text-gray-900'>ルームID: {roomId}</h2>
+          <p>ユーザ名: {name}</p>
         </div>
-        {response && (
-          <>
-            <p>レスポンス情報</p>
-            <p>{response.getId()}</p>
-            <p>{response.getType().toString()}</p>
-            <p>{response.getMessage()}</p>
-          </>
-        )}
-        <div>
-          <p>プレイヤー情報</p>
+        <div className='mb-4 flex flex-wrap'>
           {
-            Array.from(players.values()).map((player) => {
-              return (
-                <div key={player.name}>
-                  <p>{player.name}</p>
-                  <p>{player.isVoted ? "投票済み" : "未投票"}</p>
-                  <p>{player.vote}</p>
-                </div>
-              );
-            })
+            Array.from(players.values()).map((player) => (
+              <UserState key={player.name} player={player} />
+            ))
+          }
+        </div>
+        <div className='my-4'>
+          <ResultAndNewGame
+            isShown={isShown}
+            showVotes={showVotes}
+            startNewGame={startNewGame}
+          />
+        </div>
+        <div>
+          {
+            FIBONACCHI.map((num) => (
+              <VoteButton key={num} num={num} isSelected={num===votedNumber} vote={vote}/>
+            ))
           }
         </div>
       </div>
     </main>
   )
 }
-
-/* ゲーム管理用コンポーネント */
 
 type NewGameProps = {
   createNewRoom: (config: StartNewGameConfig) => void;
@@ -170,136 +238,37 @@ type NewGameProps = {
 
 const NewGame: React.FC<NewGameProps> = ({ createNewRoom, joinRoom }) => {
   return (
-    <div className="flex min-h-full flex-1 flex-col px-6 py-12 lg:px-8">
+    <div className='flex flex-col'>
       <NewGameCard title='新規ルームを作成' form={<NewRoomForm connectRoom={createNewRoom} />} />
       <NewGameCard title='既存のルームへ参加' form={<JoinRoomForm connectRoom={joinRoom} />} />
     </div>
   );
 }
 
-type NewRoomFormData = {
-  roomName: string;
-  userName: string;
+type ResultAndNewGameProps = {
+  isShown: boolean;
+  showVotes: () => void;
+  startNewGame: () => void;
 }
 
-type NewRoomFormProps = {
-  connectRoom: (config: StartNewGameConfig) => void;
-}
+const ResultAndNewGame: React.FC<ResultAndNewGameProps> = ({ isShown, showVotes, startNewGame }) => {
+  const name = isShown ? '次のポーカーへ' : '結果を見る';
 
-const NewRoomForm: React.FC<NewRoomFormProps> = ({ connectRoom }) => {
-  const { register, handleSubmit } = useForm<NewRoomFormData>();
-
-  const onSubmit = (data: NewRoomFormData) => {
-    connectRoom({room: data.roomName, userName: data.userName})
-  };
-
+  const onClick: React.MouseEventHandler<HTMLButtonElement> = (event) => {
+    event.preventDefault()
+    if (isShown) {
+      startNewGame();
+    } else {
+      showVotes();
+    }
+  }
+  
   return (
-    <form className="space-y-6" action="#" method="POST" onSubmit={handleSubmit(onSubmit)}>
-      <div>
-        <label htmlFor='roomName' className="block text-sm font-medium leading-6 text-gray-900">
-          ルーム名
-        </label>
-        <div className="mt-2">
-          <input
-            id='roomName'
-            required
-            className="block w-full rounded-md border-0 px-3 py-1.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:text-sm sm:leading-6"
-            {...register('roomName')} />
-        </div>
-      </div>
-      <div>
-        <label htmlFor='userName' className="block text-sm font-medium leading-6 text-gray-900">
-          ユーザ名
-        </label>
-        <div className="mt-2">
-          <input
-            id="userName"
-            required
-            className="block w-full rounded-md border-0 px-3 py-1.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:text-sm sm:leading-6"
-            {...register('userName')}
-          />
-        </div>
-      </div>
-      <button
-        type='submit'
-        className="flex w-full justify-center rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold leading-6 text-white shadow-sm hover:bg-indigo-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
-      >
-        ルームを作成
-      </button>
-    </form>
+    <button
+      className='flex w-full justify-center rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold leading-6 text-white shadow-sm hover:bg-indigo-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600'
+      onClick={onClick}
+    >
+      {name}
+    </button>
   );
-}
-
-type JoinRoomFormData = {
-  roomId: string;
-  userName: string;
-}
-
-type JoinRoomFormProps = {
-  connectRoom: (config: StartNewGameConfig) => void;
-}
-
-const JoinRoomForm: React.FC<JoinRoomFormProps> = ({ connectRoom }) => {
-  const { register, handleSubmit } = useForm<JoinRoomFormData>();
-
-  const onSubmit = (data: JoinRoomFormData) => {
-    connectRoom({room: data.roomId, userName: data.userName});
-  };
-
-  return (
-    <form className="space-y-6" action="#" method="POST" onSubmit={handleSubmit(onSubmit)}>
-      <div>
-        <label htmlFor='roomId' className="block text-sm font-medium leading-6 text-gray-900">
-          ルームID
-        </label>
-        <div className="mt-2">
-          <input
-            id='roomId'
-            required
-            className="block w-full rounded-md border-0 px-3 py-1.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:text-sm sm:leading-6"
-            {...register('roomId')} />
-        </div>
-      </div>
-      <div>
-        <label htmlFor='userName' className="block text-sm font-medium leading-6 text-gray-900">
-          ユーザ名
-        </label>
-        <div className="mt-2">
-          <input
-            id="userName"
-            required
-            className="block w-full rounded-md border-0 px-3 py-1.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:text-sm sm:leading-6"
-            {...register('userName')}
-          />
-        </div>
-      </div>
-      <button
-        type='submit'
-        className="flex w-full justify-center rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold leading-6 text-white shadow-sm hover:bg-indigo-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
-      >
-        ルームへ参加
-      </button>
-    </form>
-  );
-}
-
-type NewGameCardProps = {
-  title: string;
-  form: React.ReactNode;
-}
-
-const NewGameCard: React.FC<NewGameCardProps> = ({title, form}) => {
-  return (
-    <>
-      <div className="sm:mx-auto sm:w-full sm:max-w-sm">
-        <h2 className="mt-10 text-center text-2xl font-bold leading-9 tracking-tight text-gray-900">
-          {title}
-        </h2>
-      </div>
-
-      <div className="mt-10 sm:mx-auto sm:w-full sm:max-w-sm">
-        {form}
-      </div>
-    </>
-  );
-}
+};
