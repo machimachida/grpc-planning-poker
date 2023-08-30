@@ -31,6 +31,22 @@ func main() {
 		log.Fatalf("Failed to listen: %v", err)
 	}
 
+	// 1時間に1回、使われていないルームがあるか確認する
+	// 6時間使われていないルームは削除する
+	go func() {
+		for {
+			time.Sleep(1 * time.Hour)
+			rm.mu.Lock()
+			for id, r := range rm.rooms {
+				if time.Since(r.currentUsedAt) > 6*time.Hour {
+					log.Println("room " + id + " is closed because it is not used for a long time")
+					delete(rm.rooms, id)
+				}
+			}
+			rm.mu.Unlock()
+		}
+	}()
+
 	s := grpc.NewServer()
 	pb.RegisterPlanningPokerServer(s, &Server{})
 	log.Println("Server is running on port 50051")
@@ -129,6 +145,7 @@ func connectWithRoom(stream pb.PlanningPoker_ConnectServer, roomId, name string)
 
 	// 参加したことを全ユーザに通知する
 	r.connections.Broadcast(name, pb.MessageType_JOIN)
+	r.currentUsedAt = time.Now()
 
 	for {
 		select {
@@ -176,6 +193,7 @@ func (*Server) Vote(_ context.Context, req *pb.VoteRequest) (*pb.VoteResponse, e
 		r.connections.Broadcast(req.Id, pb.MessageType_VOTE)
 		r.voteMap.Store(req.Id, req.Vote)
 	}
+	r.currentUsedAt = time.Now()
 
 	return &pb.VoteResponse{Message: "voted"}, nil
 }
@@ -218,6 +236,7 @@ func (*Server) ShowVotes(_ context.Context, req *pb.ShowVotesRequest) (*pb.ShowV
 		log.Println("failed to marshal votes.", err)
 	}
 	r.connections.Broadcast(string(b), pb.MessageType_SHOW_VOTES)
+	r.currentUsedAt = time.Now()
 
 	return &pb.ShowVotesResponse{Message: "accepted"}, nil
 }
@@ -236,6 +255,7 @@ func (*Server) NewGame(_ context.Context, req *pb.NewGameRequest) (*pb.NewGameRe
 	r.voteMap = &m
 	log.Println("new game start in Room " + req.RoomId)
 	r.connections.Broadcast("new game start", pb.MessageType_NEW_GAME)
+	r.currentUsedAt = time.Now()
 
 	return &pb.NewGameResponse{Message: "accepted"}, nil
 }
@@ -246,10 +266,11 @@ type RoomMap struct {
 }
 
 type Room struct {
-	id          string
-	name        string
-	connections ConnectionMap
-	voteMap     *sync.Map
+	id            string
+	name          string
+	connections   ConnectionMap
+	voteMap       *sync.Map
+	currentUsedAt time.Time
 }
 
 // ConnectionMap Connectionの状態を保持する構造体。
