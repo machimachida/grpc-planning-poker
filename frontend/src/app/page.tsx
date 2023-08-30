@@ -21,19 +21,30 @@ import { PlanningPokerClient } from '@/proto/Planning_pokerServiceClientPb';
 import VoteButton from './components/VoteButton';
 import UserState from './components/UserState';
 
-const client = new PlanningPokerClient('http://localhost:51000');
-const FIBONACCHI = [0, 1, 2, 3, 5, 8, 13, 21];
+const FIBONACCHI = [1, 2, 3, 5, 8, 13, 21];
 const VOTE_RESET_NUMBER = -1;
+const AVERAGE_KEY_NAME = "average";
+
+if(process.env.NEXT_PUBLIC_SERVER === undefined) {
+  throw new Error('SERVER is not defined');
+}
+const client = new PlanningPokerClient(process.env.NEXT_PUBLIC_SERVER);
+
+
+type Players = {
+  [key: string]: Player;
+}
 
 export default function Home() {
   let lock = new AsyncLock();
   const [stream, setStream] = useState<ClientReadableStream<ConnectResponse> | null>(null);
-  const [response, setResponse] = useState<ConnectResponse | null>(null);
-  const [players, setPlayers] = useState<Map<string, Player>>(new Map());
+  const [response, setResponse] = useState<ConnectResponse | null>(null); // これがないとなぜか再レンダリングしない。要調査
+  const [players, setPlayers] = useState<Players>({});
   const [roomId, setRoomId] = useState<string>('');
   const [name, setName] = useState<string>('');
   const [votedNumber, setVotedNumber] = useState<number | null>(null);
   const [isShown, setIsShown] = useState<boolean>(false);
+  const [average, setAverage] = useState<number>(0);
 
   const createNewRoom = (config: StartNewGameConfig) => {
     const req = new CreateRoomRequest
@@ -41,9 +52,7 @@ export default function Home() {
     req.setRoomname(config.room);
 
     if(stream !== null) {
-      // TODO: 既存のストリームを終了させる処理をおこなう。新規部屋作成処理は続行する。
-      console.error('stream is already exist');
-      return;
+      stream.cancel();
     }
 
     const connection = client.createRoom(req);
@@ -52,6 +61,7 @@ export default function Home() {
       setResponse(res);
     });
 
+    setStream(connection);
     setName(config.userName);
   };
 
@@ -61,9 +71,7 @@ export default function Home() {
     req.setRoomid(config.room);
 
     if(stream !== null) {
-      // TODO: 既存のストリームを終了させる処理をおこなう。部屋参加処理は続行する。
-      console.error('stream is already exist');
-      return;
+      stream.cancel();
     }
 
     const connection = client.connect(req);
@@ -72,6 +80,7 @@ export default function Home() {
       setResponse(res);
     });
 
+    setStream(connection);
     setName(config.userName);
     setRoomId(config.room);
   };
@@ -90,10 +99,9 @@ export default function Home() {
     client.vote(req, {}, (err, res) => {
       if (err) {
         console.error(err);
+        alert('投票できませんでした。');
         return;
       }
-
-      console.log(res);
 
       if(num === VOTE_RESET_NUMBER) {
         setVotedNumber(null);
@@ -110,10 +118,9 @@ export default function Home() {
     client.showVotes(req, {}, (err, res) => {
       if (err) {
         console.error(err);
+        alert('投票結果を表示できませんでした。');
         return;
       }
-
-      console.log(res);
     });
   };
 
@@ -121,37 +128,44 @@ export default function Home() {
     const req = new NewGameRequest();
     req.setRoomid(roomId);
 
-    client.newGame(req, {}, (err, res) => {
+    client.newGame(req, {}, (err, _res) => {
       if (err) {
         console.error(err);
+        alert('新しいゲームを開始できませんでした。');
         return;
       }
-
-      console.log(res);
     });
   };
 
   const receiveMessage = async (res: ConnectResponse) => {
-    console.log('receive message', res);
+    console.log("receive message", res)
     await lock.acquire('receiveMessage', () => {
       switch (res.getType()) {
         case MessageType.JOIN:
-          players.set(res.getMessage(), {name: res.getMessage(), isVoted: false, vote: null});
+          console.log("join", res.getMessage());
+          players[res.getMessage()] = {name: res.getMessage(), isVoted: false, vote: null};
           setPlayers(players);
           break;
         case MessageType.VOTE:
-          const player = players.get(res.getMessage())
+          console.log("vote", res.getMessage());
+          const player = players[res.getMessage()]
           if (player) {
             player.isVoted = true;
           } else {
-            players.set(res.getMessage(), {name: res.getMessage(), isVoted: true, vote: null});
+            players[res.getMessage()] = {name: res.getMessage(), isVoted: false, vote: null};
           }
           setPlayers(players);
           break;
         case MessageType.SHOW_VOTES:
-          const votes: Map<string, number> = JSON.parse(res.getMessage());
+          console.log("show votes", res.getMessage());
+          const votes: {[key: string]: number} = JSON.parse(res.getMessage());
           for (const [key, value] of Object.entries(votes)) {
-            const player = players.get(key);
+            if (key === AVERAGE_KEY_NAME) {
+              setAverage(value);
+              continue;
+            }
+
+            const player = players[key];
             if (player) {
               player.vote = value;
               setPlayers(players);
@@ -160,38 +174,44 @@ export default function Home() {
           }
           break;
         case MessageType.LEAVE:
-          players.delete(res.getMessage());
+          console.log("leave", res.getMessage());
+          delete players[res.getMessage()];
           setPlayers(players);
           break;
         case MessageType.NEW_GAME:
-          const newPlayers = new Map<string, Player>();
-          for(let k in players.keys()) {
-            newPlayers.set(k, {name: k, isVoted: false, vote: null})
+          console.log("new game", res.getMessage());
+          for(const [key, _value] of Object.entries(players)) {
+            players[key] = {name: key, isVoted: false, vote: null}
           }
-          setPlayers(newPlayers);
+          setPlayers(players);
+          setVotedNumber(null);
           setIsShown(false);
           break;
         case MessageType.CREATE_ROOM:
+          console.log("create room", res.getMessage());
           setRoomId(res.getMessage());
           break;
         case MessageType.STATUS:
-          const playerStatuses: Map<string, boolean> = JSON.parse(res.getMessage());
+          console.log("status", res.getMessage());
+          const playerStatuses: {[key: string]: boolean} = JSON.parse(res.getMessage());
           for (const [key, value] of Object.entries(playerStatuses)) {
-            players.set(key, {name: key, isVoted: value, vote: null});
-            setPlayers(players);
+            players[key] = {name: key, isVoted: value, vote: null};
           }
+          setPlayers(players);
+          console.log(players);
           break;
         case MessageType.RESET_VOTE:
-          const resettingPlayer = players.get(res.getMessage())
+          console.log("reset vote", res.getMessage());
+          const resettingPlayer = players[res.getMessage()]
           if (resettingPlayer) {
             resettingPlayer.isVoted = false;
           } else {
-            players.set(res.getMessage(), {name: res.getMessage(), isVoted: false, vote: null});
+            players[res.getMessage()] = {name: res.getMessage(), isVoted: false, vote: null};
           }
           setPlayers(players);
           break;
       }
-      console.log(players);
+      console.log("players", players)
     });
   }
 
@@ -207,9 +227,13 @@ export default function Home() {
         </div>
         <div className='mb-4 flex flex-wrap'>
           {
-            Array.from(players.values()).map((player) => (
+            Object.values(players).map((player) => (
               <UserState key={player.name} player={player} />
             ))
+          }
+        </div>
+        <div className='h-8'>
+          {isShown && <p className='font-bold leading-9 text-gray-900'>平均: {average}</p>
           }
         </div>
         <div className='my-4'>
