@@ -6,15 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net"
+	"net/http"
 	"sync"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/google/uuid"
+	"github.com/rs/cors"
 
-	"google.golang.org/grpc"
-
-	"github.com/machimachida/grpc-planning-poker/pb"
+	pokerv1 "github.com/machimachida/grpc-planning-poker/gen/proto/v1"
+	"github.com/machimachida/grpc-planning-poker/gen/proto/v1/pokerv1connect"
 )
 
 const (
@@ -25,91 +26,97 @@ var (
 	rm = RoomMap{rooms: make(map[string]*Room)}
 )
 
-func main() {
-	lis, err := net.Listen("tcp", ":50051")
-	if err != nil {
-		log.Fatalf("Failed to listen: %v", err)
-	}
-
-	// 1時間に1回、使われていないルームがあるか確認する
-	// 6時間使われていないルームは削除する
-	go func() {
-		for {
-			time.Sleep(1 * time.Hour)
-			rm.mu.Lock()
-			for id, r := range rm.rooms {
-				if time.Since(r.currentUsedAt) > 6*time.Hour {
-					log.Println("room " + id + " is closed because it is not used for a long time")
-					delete(rm.rooms, id)
-				}
-			}
-			rm.mu.Unlock()
-		}
-	}()
-
-	s := grpc.NewServer()
-	pb.RegisterPlanningPokerServer(s, &Server{})
-	log.Println("Server is running on port 50051")
-	if err := s.Serve(lis); err != nil {
-		log.Fatalf("Failed to serve: %v", err)
-	}
-}
-
-type Server struct {
-	pb.UnimplementedPlanningPokerServer
-}
-
 var (
 	ErrReservedUserName = errors.New("this name is reserved")
 	ErrExistRoom        = errors.New("this room is already exist")
 )
 
-func (*Server) CreateRoom(req *pb.CreateRoomRequest, stream pb.PlanningPoker_CreateRoomServer) error {
-	log.Println("CreateRoom function was invoked with a request from " + req.Id)
+type pokerServer struct{}
 
-	if req.Id == AVERAGE {
-		return ErrReservedUserName
+func (s *pokerServer) CreateRoom(ctx context.Context, req *connect.Request[pokerv1.CreateRoomRequest], stream *connect.ServerStream[pokerv1.ConnectResponse]) error {
+	log.Println("CreateRoom function was invoked with a request from " + req.Msg.Id)
+
+	if req.Msg.Id == AVERAGE {
+		return connect.NewError(
+			connect.CodeAlreadyExists,
+			ErrReservedUserName,
+		)
 	}
 
 	rm.mu.Lock()
 	for room := range rm.rooms {
-		if room == req.Id {
+		if room == req.Msg.Id {
 			rm.mu.Unlock()
-			return ErrExistRoom
+			return connect.NewError(
+				connect.CodeAlreadyExists,
+				ErrExistRoom,
+			)
 		}
 	}
 
 	id := uuid.New().String()
 	rm.rooms[id] = &Room{
 		id:          id,
-		name:        req.Id,
-		connections: ConnectionMap{streams: make(map[string]pb.PlanningPoker_ConnectServer, 1)},
+		name:        req.Msg.Id,
+		connections: ConnectionMap{streams: make(map[string]StreamState, 1)},
 		voteMap:     &sync.Map{},
 	}
 	rm.mu.Unlock()
 
 	log.Println("room created: " + id)
-	err := stream.Send(&pb.ConnectResponse{Message: id, Type: pb.MessageType_CREATE_ROOM})
+
+	err := stream.Send(&pokerv1.ConnectResponse{
+		Id:      id,
+		Type:    pokerv1.MessageType_MESSAGE_TYPE_CREATE_ROOM,
+		Message: id,
+	})
 	if err != nil {
-		log.Println("failed to send message.", err)
+		return connect.NewError(connect.CodeInternal, err)
 	}
 
-	err = connectWithRoom(stream, id, req.Id)
-	return err
+	err = connectWithRoom(ctx, stream, id, req.Msg.Id)
+	if err != nil {
+		return connect.NewError(
+			connect.CodeInternal,
+			err,
+		)
+	}
+	return nil
 }
 
-func (*Server) Connect(req *pb.ConnectRequest, stream pb.PlanningPoker_ConnectServer) error {
-	log.Println("Connect function was invoked with a streaming request from " + req.Id)
+func (s *pokerServer) Connect(ctx context.Context, req *connect.Request[pokerv1.ConnectRequest], stream *connect.ServerStream[pokerv1.ConnectResponse]) error {
+	log.Println("Connect function was invoked with a request from " + req.Msg.Id)
 
-	if req.Id == AVERAGE {
-		return ErrReservedUserName
+	if req.Msg.Id == AVERAGE {
+		return connect.NewError(
+			connect.CodeAlreadyExists,
+			ErrReservedUserName,
+		)
 	}
 
-	err := connectWithRoom(stream, req.RoomId, req.Id)
-	return err
+	rm.mu.Lock()
+	for room := range rm.rooms {
+		if room == req.Msg.RoomId {
+			rm.mu.Unlock()
+			err := connectWithRoom(ctx, stream, room, req.Msg.Id)
+			if err != nil {
+				return connect.NewError(
+					connect.CodeInternal,
+					err,
+				)
+			}
+			return nil
+		}
+	}
+	rm.mu.Unlock()
+
+	return connect.NewError(
+		connect.CodeNotFound,
+		errors.New("room not found"),
+	)
 }
 
-func connectWithRoom(stream pb.PlanningPoker_ConnectServer, roomId, name string) error {
+func connectWithRoom(ctx context.Context, stream *connect.ServerStream[pokerv1.ConnectResponse], roomId, name string) error {
 	r, ok := rm.rooms[roomId]
 	if !ok {
 		msg := fmt.Sprintf("room %s not found", roomId)
@@ -118,7 +125,7 @@ func connectWithRoom(stream pb.PlanningPoker_ConnectServer, roomId, name string)
 		return err
 	}
 
-	err := r.connections.Connect(stream, name)
+	err := r.connections.Connect(ctx, stream, name)
 	if err != nil {
 		log.Println("failed to connect", err)
 		return err
@@ -137,25 +144,28 @@ func connectWithRoom(stream pb.PlanningPoker_ConnectServer, roomId, name string)
 	if err != nil {
 		log.Println("failed to marshal user vote status.", err)
 	} else {
-		err := stream.Send(&pb.ConnectResponse{Message: string(b), Type: pb.MessageType_STATUS})
+		err := stream.Send(&pokerv1.ConnectResponse{
+			Message: string(b),
+			Type:    pokerv1.MessageType_MESSAGE_TYPE_STATUS,
+		})
 		if err != nil {
 			log.Println("failed to send message.", err)
 		}
 	}
 
 	// 参加したことを全ユーザに通知する
-	r.connections.Broadcast(name, pb.MessageType_JOIN)
+	r.connections.Broadcast(name, pokerv1.MessageType_MESSAGE_TYPE_JOIN)
 	r.currentUsedAt = time.Now()
 
 	for {
 		select {
-		case <-stream.Context().Done():
+		case <-ctx.Done():
 			log.Println(name + " is disconnected from " + roomId)
-			if err := stream.Context().Err(); err != nil {
+			if err := ctx.Err(); err != nil {
 				log.Println(name, err)
 			}
 			r.connections.Disconnect(name)
-			r.connections.Broadcast(name, pb.MessageType_LEAVE)
+			r.connections.Broadcast(name, pokerv1.MessageType_MESSAGE_TYPE_LEAVE)
 
 			// 参加者がいなくなったらルームを削除する
 			if len(r.connections.streams) == 0 {
@@ -172,40 +182,51 @@ func connectWithRoom(stream pb.PlanningPoker_ConnectServer, roomId, name string)
 	}
 }
 
-func (*Server) Vote(_ context.Context, req *pb.VoteRequest) (*pb.VoteResponse, error) {
-	log.Printf("Vote function was invoked with a request from %s with vote \"%d\"\n", req.Id, req.Vote)
+func (s *pokerServer) Vote(_ context.Context, req *connect.Request[pokerv1.VoteRequest]) (*connect.Response[pokerv1.VoteResponse], error) {
+	log.Printf("Vote function was invoked with a request from %s with vote \"%d\"\n", req.Msg.Id, req.Msg.Vote)
 
-	r, ok := rm.rooms[req.RoomId]
+	r, ok := rm.rooms[req.Msg.RoomId]
 	if !ok {
-		err := fmt.Errorf("room %s not found", req.RoomId)
+		err := fmt.Errorf("room %s not found", req.Msg.RoomId)
 		log.Println(err)
-		return nil, err
+		return nil, connect.NewError(
+			connect.CodeNotFound,
+			err,
+		)
 	}
 
-	if req.Vote == -1 {
-		r.connections.Broadcast(req.Id, pb.MessageType_RESET_VOTE)
-		r.voteMap.Delete(req.Id)
-	} else if req.Vote <= 0 {
-		err := fmt.Errorf("invalid vote %d", req.Vote)
+	if req.Msg.Vote == -1 {
+		r.connections.Broadcast(req.Msg.Id, pokerv1.MessageType_MESSAGE_TYPE_RESET_VOTE)
+		r.voteMap.Delete(req.Msg.Id)
+	} else if req.Msg.Vote <= 0 {
+		err := fmt.Errorf("invalid vote %d", req.Msg.Vote)
 		log.Println(err)
-		return &pb.VoteResponse{Message: "invalid vote"}, err
+		return nil, connect.NewError(
+			connect.CodeInvalidArgument,
+			err,
+		)
 	} else {
-		r.connections.Broadcast(req.Id, pb.MessageType_VOTE)
-		r.voteMap.Store(req.Id, req.Vote)
+		r.connections.Broadcast(req.Msg.Id, pokerv1.MessageType_MESSAGE_TYPE_VOTE)
+		r.voteMap.Store(req.Msg.Id, req.Msg.Vote)
 	}
 	r.currentUsedAt = time.Now()
 
-	return &pb.VoteResponse{Message: "voted"}, nil
+	return connect.NewResponse(&pokerv1.VoteResponse{
+		Message: "voted",
+	}), nil
 }
 
-func (*Server) ShowVotes(_ context.Context, req *pb.ShowVotesRequest) (*pb.ShowVotesResponse, error) {
-	log.Println("ShowVotes function was invoked with a request from " + req.Id)
+func (s *pokerServer) ShowVotes(_ context.Context, req *connect.Request[pokerv1.ShowVotesRequest]) (*connect.Response[pokerv1.ShowVotesResponse], error) {
+	log.Println("ShowVotes function was invoked with a request from " + req.Msg.Id)
 
-	r, ok := rm.rooms[req.RoomId]
+	r, ok := rm.rooms[req.Msg.RoomId]
 	if !ok {
-		err := fmt.Errorf("room %s not found", req.RoomId)
+		err := fmt.Errorf("room %s not found", req.Msg.RoomId)
 		log.Println(err)
-		return nil, err
+		return nil, connect.NewError(
+			connect.CodeNotFound,
+			err,
+		)
 	}
 
 	votes := make(map[string]float32, len(r.connections.streams)+1)
@@ -227,7 +248,9 @@ func (*Server) ShowVotes(_ context.Context, req *pb.ShowVotesRequest) (*pb.ShowV
 	})
 
 	if sum == 0 {
-		return &pb.ShowVotesResponse{Message: "no votes"}, nil
+		return connect.NewResponse(&pokerv1.ShowVotesResponse{
+			Message: "no votes",
+		}), nil
 	}
 
 	votes[AVERAGE] = float32(sum) / float32(l)
@@ -235,29 +258,89 @@ func (*Server) ShowVotes(_ context.Context, req *pb.ShowVotesRequest) (*pb.ShowV
 	if err != nil {
 		log.Println("failed to marshal votes.", err)
 	}
-	r.connections.Broadcast(string(b), pb.MessageType_SHOW_VOTES)
+	r.connections.Broadcast(string(b), pokerv1.MessageType_MESSAGE_TYPE_SHOW_VOTES)
 	r.currentUsedAt = time.Now()
 
-	return &pb.ShowVotesResponse{Message: "accepted"}, nil
+	return connect.NewResponse(&pokerv1.ShowVotesResponse{
+		Message: "accepted",
+	}), nil
 }
 
-func (*Server) NewGame(_ context.Context, req *pb.NewGameRequest) (*pb.NewGameResponse, error) {
-	log.Println("NewGame function was invoked with a request from " + req.Id)
+func (s *pokerServer) NewGame(_ context.Context, req *connect.Request[pokerv1.NewGameRequest]) (*connect.Response[pokerv1.NewGameResponse], error) {
+	log.Println("NewGame function was invoked with a request from " + req.Msg.Id)
 
-	r, ok := rm.rooms[req.RoomId]
+	r, ok := rm.rooms[req.Msg.RoomId]
 	if !ok {
-		err := fmt.Errorf("room %s not found", req.RoomId)
+		err := fmt.Errorf("room %s not found", req.Msg.RoomId)
 		log.Println(err)
-		return nil, err
+		return nil, connect.NewError(
+			connect.CodeNotFound,
+			err,
+		)
 	}
 
 	var m sync.Map
 	r.voteMap = &m
-	log.Println("new game start in Room " + req.RoomId)
-	r.connections.Broadcast("new game start", pb.MessageType_NEW_GAME)
+	log.Println("new game start in Room " + req.Msg.RoomId)
+	r.connections.Broadcast("new game start", pokerv1.MessageType_MESSAGE_TYPE_NEW_GAME)
 	r.currentUsedAt = time.Now()
 
-	return &pb.NewGameResponse{Message: "accepted"}, nil
+	return connect.NewResponse(&pokerv1.NewGameResponse{
+		Message: "accepted",
+	}), nil
+}
+
+func main() {
+	// 1時間に1回、使われていないルームがあるか確認する
+	// 6時間使われていないルームは削除する
+	go func() {
+		for {
+			time.Sleep(1 * time.Hour)
+			rm.mu.Lock()
+			for id, r := range rm.rooms {
+				if time.Since(r.currentUsedAt) > 6*time.Hour {
+					log.Println("room " + id + " is closed because it is not used for a long time")
+					delete(rm.rooms, id)
+				}
+			}
+			rm.mu.Unlock()
+		}
+	}()
+
+	corsHandler := cors.New(cors.Options{
+		AllowedMethods: []string{"GET", "POST"},
+		AllowedOrigins: []string{"*"},
+		AllowedHeaders: []string{
+			"Accept-Encoding",
+			"Content-Encoding",
+			"Content-Type",
+			"Content-Type",
+			"Connect-Protocol-Version",
+			"Connect-Timeout-Ms",
+			"Connect-Accept-Encoding",  // Unused in web browsers, but added for future-proofing
+			"Connect-Content-Encoding", // Unused in web browsers, but added for future-proofing
+			"Grpc-Timeout",             // Used for gRPC-web
+			"X-Grpc-Web",               // Used for gRPC-web
+			"X-User-Agent",             // Used for gRPC-web
+		},
+		ExposedHeaders: []string{
+			"Content-Encoding",         // Unused in web browsers, but added for future-proofing
+			"Connect-Content-Encoding", // Unused in web browsers, but added for future-proofing
+			"Grpc-Status",              // Required for gRPC-web
+			"Grpc-Message",             // Required for gRPC-web
+		},
+	})
+
+	server := &pokerServer{}
+	mux := http.NewServeMux()
+	mux.Handle(pokerv1connect.NewPlanningPokerServiceHandler(server))
+	handler := corsHandler.Handler(mux)
+
+	log.Println("Listening on :8080")
+	err := http.ListenAndServe(":8080", handler)
+	if err != nil {
+		log.Fatal(err)
+	}
 }
 
 type RoomMap struct {
@@ -278,33 +361,44 @@ type Room struct {
 // streamsは、クライアントのIDをキーとして、クライアントとの接続を保持する。
 type ConnectionMap struct {
 	mu      sync.Mutex
-	streams map[string]pb.PlanningPoker_ConnectServer
+	streams map[string]StreamState
+}
+
+type StreamState struct {
+	ctx    context.Context
+	stream *connect.ServerStream[pokerv1.ConnectResponse]
 }
 
 var ErrAlreadyConnected = errors.New("already connected")
 
-func (cm *ConnectionMap) Connect(stream pb.PlanningPoker_ConnectServer, name string) error {
+func (cm *ConnectionMap) Connect(ctx context.Context, stream *connect.ServerStream[pokerv1.ConnectResponse], name string) error {
 	cm.mu.Lock()
 	if _, ok := cm.streams[name]; ok {
 		cm.mu.Unlock()
 		return ErrAlreadyConnected
 	}
-	cm.streams[name] = stream
+	cm.streams[name] = StreamState{
+		ctx:    ctx,
+		stream: stream,
+	}
 	cm.mu.Unlock()
 	return nil
 }
 
 func (cm *ConnectionMap) Disconnect(name string) {
 	cm.mu.Lock()
-	cm.streams[name].Context().Done()
+	cm.streams[name].ctx.Done()
 	delete(cm.streams, name)
 	cm.mu.Unlock()
 }
 
-func (cm *ConnectionMap) Broadcast(message string, mt pb.MessageType) {
+func (cm *ConnectionMap) Broadcast(message string, mt pokerv1.MessageType) {
 	cm.mu.Lock()
-	for id, stream := range cm.streams {
-		err := stream.Send(&pb.ConnectResponse{Message: message, Type: mt})
+	for id, state := range cm.streams {
+		err := state.stream.Send(&pokerv1.ConnectResponse{
+			Type:    mt,
+			Message: message,
+		})
 		if err != nil {
 			log.Println("failed to send message to "+id, err)
 		}
