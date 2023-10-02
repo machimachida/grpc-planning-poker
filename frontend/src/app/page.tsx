@@ -1,35 +1,38 @@
 'use client';
 import AsyncLock from 'async-lock';
-import { ClientReadableStream } from 'grpc-web';
-import { useState } from 'react';
+import React, { useState } from 'react';
+import { createPromiseClient} from "@connectrpc/connect";
+import { createConnectTransport } from "@connectrpc/connect-web";
 
 import JoinRoomForm from '@/app/components/JoinRoomForm';
 import NewGameCard from '@/app/components/NewGameCard';
 import NewRoomForm from '@/app/components/NewRoomForm';
+import VoteButton from '@/app/components/VoteButton';
+import UserState from '@/app/components/UserState';
 import { StartNewGameConfig } from '@/app/types/newGame';
 import { Player } from '@/app/types/player';
+import { PlanningPokerService } from "@/gen/proto/v1/planning_poker_connect";
 import {
   ConnectRequest,
   ConnectResponse,
   CreateRoomRequest,
-  MessageType,
   VoteRequest,
   ShowVotesRequest,
   NewGameRequest,
-} from '@/proto/planning_poker_pb';
-import { PlanningPokerClient } from '@/proto/Planning_pokerServiceClientPb';
-import VoteButton from './components/VoteButton';
-import UserState from './components/UserState';
+  MessageType
+} from "@/gen/proto/v1/planning_poker_pb";
 
-const FIBONACCHI = [1, 2, 3, 5, 8, 13, 21];
+
+
+const FIBONACCI = [1, 2, 3, 5, 8, 13, 21];
 const VOTE_RESET_NUMBER = -1;
 const AVERAGE_KEY_NAME = "average";
 
 if(process.env.NEXT_PUBLIC_SERVER === undefined) {
   throw new Error('SERVER is not defined');
 }
-const client = new PlanningPokerClient(process.env.NEXT_PUBLIC_SERVER);
-
+const transport = createConnectTransport({baseUrl: process.env.NEXT_PUBLIC_SERVER});
+const client = createPromiseClient(PlanningPokerService, transport);
 
 type Players = {
   [key: string]: Player;
@@ -37,8 +40,7 @@ type Players = {
 
 export default function Home() {
   let lock = new AsyncLock();
-  const [stream, setStream] = useState<ClientReadableStream<ConnectResponse> | null>(null);
-  const [response, setResponse] = useState<ConnectResponse | null>(null); // これがないとなぜか再レンダリングしない。要調査
+  const [_response, setResponse] = useState<ConnectResponse | null>(null); // これがないとなぜか再レンダリングしない。要調査
   const [players, setPlayers] = useState<Players>({});
   const [roomId, setRoomId] = useState<string>('');
   const [name, setName] = useState<string>('');
@@ -46,119 +48,96 @@ export default function Home() {
   const [isShown, setIsShown] = useState<boolean>(false);
   const [average, setAverage] = useState<number>(0);
 
-  const createNewRoom = (config: StartNewGameConfig) => {
-    const req = new CreateRoomRequest
-    req.setId(config.userName);
-    req.setRoomname(config.room);
-
-    if(stream !== null) {
-      stream.cancel();
-    }
-
-    const connection = client.createRoom(req);
-    connection.on('data', async (res: ConnectResponse) => {
-      await receiveMessage(res);
-      setResponse(res);
-    });
-
-    setStream(connection);
+  const createNewRoom = async (config: StartNewGameConfig) => {
+    const req = new CreateRoomRequest({id: config.userName, roomName: config.room})
     setName(config.userName);
+    for await (const res of client.createRoom(req) as AsyncIterable<ConnectResponse>) {
+      try {
+        await receiveMessage(res);
+        setResponse(res);
+      } catch (err) {
+        console.error(err);
+      }
+    }
   };
 
-  const joinRoom = (config: StartNewGameConfig) => {
-    const req = new ConnectRequest();
-    req.setId(config.userName);
-    req.setRoomid(config.room);
-
-    if(stream !== null) {
-      stream.cancel();
-    }
-
-    const connection = client.connect(req);
-    connection.on('data', async (res: ConnectResponse) => {
-      await receiveMessage(res);
-      setResponse(res);
-    });
-
-    setStream(connection);
+  const joinRoom = async (config: StartNewGameConfig) => {
+    const req = new ConnectRequest({id: config.userName, roomId: config.room})
     setName(config.userName);
     setRoomId(config.room);
+    for await (const res of client.connect(req) as AsyncIterable<ConnectResponse>) {
+      try {
+        await receiveMessage(res);
+        setResponse(res);
+      } catch(err) {
+        console.error(err);
+      }
+    }
   };
 
-  const vote = (num: number) => {
-    const req = new VoteRequest();
-
+  const vote = async (num: number) => {
     if(num === votedNumber) {
       num = VOTE_RESET_NUMBER;
     }
+    const req = new VoteRequest({id: name, roomId, vote: num});
 
-    req.setId(name);
-    req.setRoomid(roomId);
-    req.setVote(num);
-
-    client.vote(req, {}, (err, res) => {
-      if (err) {
-        console.error(err);
-        alert('投票できませんでした。');
-        return;
-      }
-
+    try {
+      await client.vote(req);
       if(num === VOTE_RESET_NUMBER) {
         setVotedNumber(null);
-        return;
+      } else {
+        setVotedNumber(num);
       }
-      setVotedNumber(num);
-    });
+    } catch (err) {
+      console.error(err);
+      alert('投票できませんでした。');
+    }
   };
 
-  const showVotes = () => {
-    const req = new ShowVotesRequest();
-    req.setRoomid(roomId);
+  const showVotes = async () => {
+    const req = new ShowVotesRequest({roomId: roomId});
 
-    client.showVotes(req, {}, (err, res) => {
-      if (err) {
-        console.error(err);
-        alert('投票結果を表示できませんでした。');
-        return;
-      }
-    });
+    try {
+      await client.showVotes(req);
+    } catch (err) {
+      console.error(err);
+      alert('投票結果を表示できませんでした。');
+    }
   };
 
-  const startNewGame = () => {
-    const req = new NewGameRequest();
-    req.setRoomid(roomId);
+  const startNewGame = async () => {
+    const req = new NewGameRequest({roomId: roomId});
 
-    client.newGame(req, {}, (err, _res) => {
-      if (err) {
-        console.error(err);
-        alert('新しいゲームを開始できませんでした。');
-        return;
-      }
-    });
+    try {
+      await client.newGame(req);
+    } catch(err) {
+      console.error(err);
+      alert('新しいゲームを開始できませんでした。');
+    }
   };
 
   const receiveMessage = async (res: ConnectResponse) => {
     console.log("receive message", res)
     await lock.acquire('receiveMessage', () => {
-      switch (res.getType()) {
+      switch (res.type) {
         case MessageType.JOIN:
-          console.log("join", res.getMessage());
-          players[res.getMessage()] = {name: res.getMessage(), isVoted: false, vote: null};
+          console.log("join", res.message);
+          players[res.message] = {name: res.message, isVoted: false, vote: null};
           setPlayers(players);
           break;
         case MessageType.VOTE:
-          console.log("vote", res.getMessage());
-          const player = players[res.getMessage()]
+          console.log("vote", res.message);
+          const player = players[res.message]
           if (player) {
             player.isVoted = true;
           } else {
-            players[res.getMessage()] = {name: res.getMessage(), isVoted: false, vote: null};
+            players[res.message] = {name: res.message, isVoted: false, vote: null};
           }
           setPlayers(players);
           break;
         case MessageType.SHOW_VOTES:
-          console.log("show votes", res.getMessage());
-          const votes: {[key: string]: number} = JSON.parse(res.getMessage());
+          console.log("show votes", res.message);
+          const votes: {[key: string]: number} = JSON.parse(res.message);
           for (const [key, value] of Object.entries(votes)) {
             if (key === AVERAGE_KEY_NAME) {
               setAverage(value);
@@ -174,12 +153,12 @@ export default function Home() {
           }
           break;
         case MessageType.LEAVE:
-          console.log("leave", res.getMessage());
-          delete players[res.getMessage()];
+          console.log("leave", res.message);
+          delete players[res.message];
           setPlayers(players);
           break;
         case MessageType.NEW_GAME:
-          console.log("new game", res.getMessage());
+          console.log("new game", res.message);
           for(const [key, _value] of Object.entries(players)) {
             players[key] = {name: key, isVoted: false, vote: null}
           }
@@ -188,12 +167,12 @@ export default function Home() {
           setIsShown(false);
           break;
         case MessageType.CREATE_ROOM:
-          console.log("create room", res.getMessage());
-          setRoomId(res.getMessage());
+          console.log("create room", res.message);
+          setRoomId(res.message);
           break;
         case MessageType.STATUS:
-          console.log("status", res.getMessage());
-          const playerStatuses: {[key: string]: boolean} = JSON.parse(res.getMessage());
+          console.log("status", res.message);
+          const playerStatuses: {[key: string]: boolean} = JSON.parse(res.message);
           for (const [key, value] of Object.entries(playerStatuses)) {
             players[key] = {name: key, isVoted: value, vote: null};
           }
@@ -201,12 +180,12 @@ export default function Home() {
           console.log(players);
           break;
         case MessageType.RESET_VOTE:
-          console.log("reset vote", res.getMessage());
-          const resettingPlayer = players[res.getMessage()]
+          console.log("reset vote", res.message);
+          const resettingPlayer = players[res.message]
           if (resettingPlayer) {
             resettingPlayer.isVoted = false;
           } else {
-            players[res.getMessage()] = {name: res.getMessage(), isVoted: false, vote: null};
+            players[res.message] = {name: res.message, isVoted: false, vote: null};
           }
           setPlayers(players);
           break;
@@ -245,7 +224,7 @@ export default function Home() {
         </div>
         <div>
           {
-            FIBONACCHI.map((num) => (
+            FIBONACCI.map((num) => (
               <VoteButton key={num} num={num} isSelected={num===votedNumber} vote={vote}/>
             ))
           }

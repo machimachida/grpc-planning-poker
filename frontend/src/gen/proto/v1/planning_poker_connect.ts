@@ -3,7 +3,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { ConnectRequest, ConnectResponse, CreateRoomRequest, NewGameRequest, NewGameResponse, ShowVotesRequest, ShowVotesResponse, VoteRequest, VoteResponse } from "./planning_poker_pb.js";
+import { ConnectRequest, ConnectResponse, CreateRoomRequest, NewGameRequest, NewGameResponse, ShowVotesRequest, ShowVotesResponse, VoteRequest, VoteResponse } from "./planning_poker_pb.ts";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
