@@ -5,15 +5,7 @@ services:
     build:
       context: ../
       dockerfile: docker/server.Dockerfile
-    image: machimachida/grpc-planning-poker:1.0
+    image: machimachida/grpc-planning-poker:2.0
     container_name: grpc-planning-poker-server
     ports:
-      - "50051:50051"
-
-  envoy:
-    image: envoyproxy/envoy:v1.27-latest
-    container_name: envoy-grpc-proxy
-    volumes:
-      - ./envoy.yaml:/etc/envoy/envoy.yaml
-    ports:
-      - "51000:9000"
+      - 8080:8080
