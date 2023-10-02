@@ -78,9 +78,9 @@ export class CreateRoomRequest extends Message<CreateRoomRequest> {
   id = "";
 
   /**
-   * @generated from field: string room_name = 2;
+   * @generated from field: string room_id = 2;
    */
-  roomName = "";
+  roomId = "";
 
   constructor(data?: PartialMessage<CreateRoomRequest>) {
     super();
@@ -91,7 +91,7 @@ export class CreateRoomRequest extends Message<CreateRoomRequest> {
   static readonly typeName = "proto.v1.CreateRoomRequest";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 2, name: "room_name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "room_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateRoomRequest {

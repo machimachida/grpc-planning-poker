@@ -2,7 +2,7 @@ import { useForm } from 'react-hook-form';
 import { StartNewGameConfig } from '@/app/types/newGame';
 
 type NewRoomFormData = {
-  roomName: string;
+  roomId: string;
   userName: string;
 }
 
@@ -14,21 +14,21 @@ export default function NewRoomForm({ connectRoom }: NewRoomFormProps) {
   const { register, handleSubmit } = useForm<NewRoomFormData>();
 
   const onSubmit = (data: NewRoomFormData) => {
-    connectRoom({room: data.roomName, userName: data.userName})
+    connectRoom({room: data.roomId, userName: data.userName})
   };
 
   return (
     <form className='space-y-6' action='#' method='POST' onSubmit={handleSubmit(onSubmit)}>
       <div>
-        <label htmlFor='roomName' className='block text-sm font-medium leading-6 text-gray-900'>
-          ルーム名
+        <label htmlFor='roomId' className='block text-sm font-medium leading-6 text-gray-900'>
+          ルームID
         </label>
         <div className='mt-2'>
           <input
-            id='roomName'
+            id='roomId'
             required
             className='block w-full rounded-md border-0 px-3 py-1.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:text-sm sm:leading-6'
-            {...register('roomName')} />
+            {...register('roomId')} />
         </div>
       </div>
       <div>

@@ -49,7 +49,7 @@ export default function Home() {
   const [average, setAverage] = useState<number>(0);
 
   const createNewRoom = async (config: StartNewGameConfig) => {
-    const req = new CreateRoomRequest({id: config.userName, roomName: config.room})
+    const req = new CreateRoomRequest({id: config.userName, roomId: config.room})
     setName(config.userName);
     for await (const res of client.createRoom(req) as AsyncIterable<ConnectResponse>) {
       try {

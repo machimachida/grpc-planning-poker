@@ -5,7 +5,7 @@ services:
     build:
       context: ../
       dockerfile: docker/server.Dockerfile
-    image: machimachida/grpc-planning-poker:2.0
+    image: grpcplanningpoker.azurecr.io/machimachida/grpc-planning-poker:2.1
     container_name: grpc-planning-poker-server
     ports:
       - 8080:8080

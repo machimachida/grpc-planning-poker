@@ -26,7 +26,7 @@ enum MessageType {
 
 message CreateRoomRequest {
   string id = 1;
-  string room_name = 2;
+  string room_id = 2;
 }
 
 message ConnectRequest {

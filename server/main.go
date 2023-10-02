@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/google/uuid"
 	"github.com/rs/cors"
 
 	pokerv1 "github.com/machimachida/grpc-planning-poker/gen/proto/v1"
@@ -54,10 +53,9 @@ func (s *pokerServer) CreateRoom(ctx context.Context, req *connect.Request[poker
 		}
 	}
 
-	id := uuid.New().String()
+	id := req.Msg.RoomId
 	rm.rooms[id] = &Room{
 		id:          id,
-		name:        req.Msg.Id,
 		connections: ConnectionMap{streams: make(map[string]StreamState, 1)},
 		voteMap:     &sync.Map{},
 	}
@@ -350,7 +348,6 @@ type RoomMap struct {
 
 type Room struct {
 	id            string
-	name          string
 	connections   ConnectionMap
 	voteMap       *sync.Map
 	currentUsedAt time.Time

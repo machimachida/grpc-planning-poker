@@ -44,10 +44,10 @@ func main() {
 		err    error
 	)
 	if *isCreatingRoom {
-		fmt.Print("Please input room name: ")
-		var roomName string
+		fmt.Print("Please input room id: ")
+		var id string
 		for {
-			_, err := fmt.Scan(&roomName)
+			_, err := fmt.Scan(&id)
 			if err == nil {
 				break
 			}
@@ -55,8 +55,8 @@ func main() {
 			println("Please input room name.")
 		}
 		stream, err = client.CreateRoom(ctx, connect.NewRequest(&pokerv1.CreateRoomRequest{
-			Id:       *name,
-			RoomName: roomName,
+			Id:     *name,
+			RoomId: id,
 		}))
 	} else {
 		stream, err = client.Connect(ctx, connect.NewRequest(&pokerv1.ConnectRequest{
